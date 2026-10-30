@@ -1,0 +1,544 @@
+"""
+interface/chat.py
+─────────────────
+Interactive chat interface for ARDF.
+
+Enhanced with new commands:
+  - /sqli: Run SQL injection validation
+  - /bruteforce: Run brute-force validation
+  - /tools: List available tools
+  - /scan: Quick scan with tools
+"""
+
+import os
+import sys
+import json
+import time
+import readline
+import subprocess
+from typing import Any, Dict, List, Optional
+from pathlib import Path
+
+from modules.logger import get_logger, ARDFLogger
+from modules.session import Session, SessionMode
+
+
+class ChatInterface:
+    """Interactive chat interface with enhanced commands."""
+
+    def __init__(
+        self,
+        session: Session,
+        logger: Optional[ARDFLogger] = None,
+        history_file: Optional[Path] = None
+    ):
+        self.session = session
+        self.logger = logger or get_logger("chat")
+        self.history_file = history_file or Path.home() / ".ardf_chat_history"
+        self.running = True
+        self.context = {}
+        self.commands = {
+            "/help": self._cmd_help,
+            "/bypass": self._cmd_bypass,
+            "/workflow": self._cmd_workflow,
+            "/origin": self._cmd_origin,
+            "/cf-status": self._cmd_cf_status,
+            "/adapt": self._cmd_adapt,
+            "/findings": self._cmd_findings,
+            "/report": self._cmd_report,
+            "/status": self._cmd_status,
+            "/config": self._cmd_config,
+            "/clear": self._cmd_clear,
+            "/exit": self._cmd_exit,
+            "/quit": self._cmd_exit,
+            # NEW COMMANDS
+            "/sqli": self._cmd_sqli,
+            "/bruteforce": self._cmd_bruteforce,
+            "/tools": self._cmd_tools,
+            "/scan": self._cmd_scan,
+        }
+        self._load_history()
+
+    def _load_history(self) -> None:
+        if self.history_file.exists():
+            try:
+                readline.read_history_file(str(self.history_file))
+            except Exception:
+                pass
+
+    def _save_history(self) -> None:
+        try:
+            readline.write_history_file(str(self.history_file))
+        except Exception:
+            pass
+
+    def _prompt(self) -> str:
+        target = self.session.meta.target
+        mode = self.session.meta.mode.value.upper()
+        cf_status = self._get_cf_status()
+        cf_indicator = " 🔥" if cf_status.get("detected") else ""
+        return f"\033[36mardf({mode}){cf_indicator}\033[0m:\033[33m{target}\033[0m> "
+
+    def _get_cf_status(self) -> Dict:
+        status = {"detected": False, "bypassed": False, "origin": None}
+        recon_path = self.session.dir("recon") / "recon_passive_summary.json"
+        if recon_path.exists():
+            try:
+                data = json.loads(recon_path.read_text())
+                cf = data.get("cloudflare", {})
+                status["detected"] = cf.get("detected", False)
+                status["version"] = cf.get("version")
+            except Exception:
+                pass
+        bypass_path = self.session.dir("bypass") / "bypass_report.json"
+        if bypass_path.exists():
+            try:
+                data = json.loads(bypass_path.read_text())
+                status["bypassed"] = data.get("bypass_achieved", False)
+                candidates = data.get("origin_candidates", [])
+                if candidates:
+                    status["origin"] = candidates[0]
+            except Exception:
+                pass
+        return status
+
+    # ── NEW COMMANDS ──────────────────────────────────────────
+
+    def _cmd_sqli(self, args: List[str]) -> None:
+        """Run SQL injection validation."""
+        target = self.session.meta.target
+        print(f"\033[33mRunning SQL injection validation on {target}...\033[0m")
+
+        try:
+            from modules.validate.sqli import SQLiValidator
+            sqli = SQLiValidator(self.session, self.logger)
+
+            urls = []
+            for f in self.session.get_findings():
+                if f.evidence and "http" in f.evidence:
+                    urls.append(f.evidence)
+
+            if not urls:
+                urls = [f"https://{target}", f"http://{target}"]
+
+            for url in urls[:3]:
+                print(f"\n  Testing: {url}")
+                result = sqli.validate(url)
+
+                if result.get("confirmed"):
+                    print(f"\033[32m  ✅ SQL injection confirmed on {url}\033[0m")
+                    for confirmed in result.get("confirmed", []):
+                        print(f"    - Parameter: {confirmed.get('parameter', 'unknown')}")
+                        print(f"    - Type: {confirmed.get('vuln_type', 'unknown')}")
+                elif result.get("vulnerable"):
+                    print(f"\033[33m  ⚠️ Potential SQL injection found on {url}\033[0m")
+                    for vuln in result.get("vulnerable", []):
+                        print(f"    - Parameter: {vuln.get('parameter', 'unknown')}")
+                else:
+                    print(f"\033[90m  ❌ No SQL injection found on {url}\033[0m")
+
+        except Exception as e:
+            print(f"\033[31mError: {e}\033[0m")
+
+    def _cmd_bruteforce(self, args: List[str]) -> None:
+        """Run brute-force validation."""
+        target = self.session.meta.target
+        print(f"\033[33mRunning brute-force validation on {target}...\033[0m")
+
+        try:
+            from modules.validate.auth import AuthValidator
+            auth = AuthValidator(self.session, self.logger)
+            result = auth.run(target)
+
+            endpoints = result.get("login_endpoints", [])
+            vulns = result.get("vulnerabilities", [])
+
+            print(f"\n  Found {len(endpoints)} login endpoints")
+            for endpoint in endpoints[:5]:
+                print(f"    - {endpoint}")
+
+            if vulns:
+                print(f"\n\033[32m  ✅ {len(vulns)} vulnerabilities found:\033[0m")
+                for vuln in vulns:
+                    print(f"    - {vuln.get('type', 'unknown')} on {vuln.get('endpoint', 'unknown')}")
+                    if vuln.get("found"):
+                        for cred in vuln.get("found", []):
+                            print(f"      Credential: {cred.get('username', 'unknown')}:{cred.get('password', 'unknown')}")
+            else:
+                print(f"\033[90m  ❌ No brute-force vulnerabilities found\033[0m")
+
+        except Exception as e:
+            print(f"\033[31mError: {e}\033[0m")
+
+    def _cmd_tools(self, args: List[str]) -> None:
+        """List available tools."""
+        print("\033[1mAvailable Tools:\033[0m")
+
+        tools = [
+            ("sqlmap", "SQL injection automation"),
+            ("hydra", "Brute-force password cracking"),
+            ("nmap", "Network discovery and scanning"),
+        ]
+
+        for tool, desc in tools:
+            try:
+                import subprocess
+                result = subprocess.run(["which", tool], capture_output=True, text=True, timeout=2)
+                status = "\033[32m✅ installed\033[0m" if result.returncode == 0 else "\033[31m❌ not found\033[0m"
+            except Exception:
+                status = "\033[31m❌ not found\033[0m"
+            print(f"  {tool}: {desc} - {status}")
+
+    def _cmd_scan(self, args: List[str]) -> None:
+        """Quick scan with tools."""
+        target = self.session.meta.target
+        tool = args[0] if args else "nmap"
+
+        print(f"\033[33mRunning quick scan with {tool} on {target}...\033[0m")
+
+        if tool == "nmap":
+            try:
+                from modules.tools.nmap_wrapper import NmapWrapper
+                nmap = NmapWrapper(self.session, self.logger)
+                result = nmap.quick_scan(target)
+
+                ports = result.get("ports", [])
+                print(f"\n  Found {len(ports)} open ports")
+                for port in ports[:10]:
+                    print(f"    - {port.get('port')}/{port.get('protocol')}: {port.get('service', 'unknown')}")
+
+            except Exception as e:
+                print(f"\033[31mError: {e}\033[0m")
+        else:
+            print(f"\033[33mTool '{tool}' not supported for quick scan. Use /tools to see available tools.\033[0m")
+
+    # ── Existing Commands ─────────────────────────────────────
+
+    def _cmd_help(self, args: List[str]) -> None:
+        help_text = """
+\033[1mARDF Chat Commands\033[0m
+
+\033[36mCloudflare Commands:\033[0m
+  /bypass               - Run Cloudflare bypass techniques
+  /origin               - Show discovered origin IPs
+  /cf-status            - Show Cloudflare detection status
+
+\033[36mWorkflow Commands:\033[0m
+  /workflow             - Show current workflow state
+  /adapt                - Adapt workflow based on findings
+
+\033[36mValidation Commands:\033[0m (NEW)
+  /sqli                 - Run SQL injection validation
+  /bruteforce           - Run brute-force validation
+
+\033[36mTool Commands:\033[0m (NEW)
+  /tools                - List available tools
+  /scan [tool]          - Quick scan with tool (nmap, sqlmap, hydra)
+
+\033[36mGeneral Commands:\033[0m
+  /findings [count]     - Show recent findings
+  /report               - Generate HTML report
+  /status               - Show session status
+  /config [key]         - Show configuration
+  /clear                - Clear screen
+  /exit, /quit          - Exit chat
+
+\033[36mNatural Language:\033[0m
+  You can also type natural language objectives:
+  - "bypass Cloudflare for target.com"
+  - "run adaptive workflow"
+  - "show origin IPs"
+  - "generate report"
+  - "test SQL injection"
+  - "brute-force login"
+"""
+        print(help_text)
+
+    def _cmd_bypass(self, args: List[str]) -> None:
+        target = self.session.meta.target
+        print(f"\033[33mRunning Cloudflare bypass for {target}...\033[0m")
+
+        from modules.bypass import run_bypass
+        try:
+            result = run_bypass(target, self.session, self.logger)
+            if result.get("bypass_achieved"):
+                print(f"\033[32m✅ Bypass successful!\033[0m")
+                print(f"  Origin candidates: {', '.join(result.get('origin_candidates', [])[:3])}")
+                print(f"  Best candidate: {result.get('best_candidate', 'N/A')}")
+            else:
+                print("\033[31m❌ Bypass failed. No origin candidates found.\033[0m")
+        except Exception as e:
+            print(f"\033[31mError: {e}\033[0m")
+
+    def _cmd_workflow(self, args: List[str]) -> None:
+        state_path = self.session.dir("core") / "workflow_state.json"
+        if not state_path.exists():
+            print("\033[33mNo workflow state found. Run a mission first.\033[0m")
+            return
+
+        try:
+            data = json.loads(state_path.read_text())
+            print("\033[1mWorkflow State\033[0m")
+            print(f"  Status: {data.get('status', 'unknown')}")
+            print(f"  Phase: {data.get('phase', 'unknown')}")
+            print(f"  Bypass: {data.get('bypass_status', 'not_attempted')}")
+            print(f"  Origin IP: {data.get('origin_ip', 'N/A')}")
+            print(f"  WAF Type: {data.get('waf_type', 'N/A')}")
+            print(f"  Completed: {len(data.get('completed_tasks', []))} tasks")
+            print(f"  Failed: {len(data.get('failed_tasks', []))} tasks")
+            print(f"  SQLi Findings: {len(data.get('sqli_findings', []))}")
+            print(f"  BruteForce Findings: {len(data.get('bruteforce_findings', []))}")
+            if data.get('errors'):
+                print(f"  Errors: {data['errors'][-3:]}")
+        except Exception as e:
+            print(f"\033[31mError reading workflow state: {e}\033[0m")
+
+    def _cmd_origin(self, args: List[str]) -> None:
+        status = self._get_cf_status()
+        if status.get("origin"):
+            print(f"\033[32mOrigin IP: {status['origin']}\033[0m")
+        else:
+            bypass_path = self.session.dir("bypass") / "bypass_report.json"
+            if bypass_path.exists():
+                try:
+                    data = json.loads(bypass_path.read_text())
+                    candidates = data.get("origin_candidates", [])
+                    if candidates:
+                        print(f"\033[32mOrigin candidates:\033[0m")
+                        for i, ip in enumerate(candidates[:10], 1):
+                            print(f"  {i}. {ip}")
+                    else:
+                        print("\033[33mNo origin candidates found.\033[0m")
+                except Exception:
+                    print("\033[33mNo origin data available.\033[0m")
+            else:
+                print("\033[33mRun /bypass first to discover origin IPs.\033[0m")
+
+    def _cmd_cf_status(self, args: List[str]) -> None:
+        status = self._get_cf_status()
+        print("\033[1mCloudflare Status\033[0m")
+        print(f"  Detected: {'✅' if status.get('detected') else '❌'}")
+        if status.get('version'):
+            print(f"  Version: {status['version']}")
+        print(f"  Bypassed: {'✅' if status.get('bypassed') else '❌'}")
+        print(f"  Origin IP: {status.get('origin', 'N/A')}")
+
+    def _cmd_adapt(self, args: List[str]) -> None:
+        print("\033[33mAdapting workflow based on current findings...\033[0m")
+        decision_path = self.session.dir("ai") / "tactical_decision.json"
+        if decision_path.exists():
+            try:
+                data = json.loads(decision_path.read_text())
+                print("\033[1mTactical Decision:\033[0m")
+                print(f"  Recommendation: {data.get('decision', {}).get('recommendation', 'N/A')}")
+            except Exception:
+                pass
+        print("\033[33mUse /workflow to see current state and /sqli or /bruteforce to run validations.\033[0m")
+
+    def _cmd_findings(self, args: List[str]) -> None:
+        count = 10
+        if args:
+            try:
+                count = int(args[0])
+            except ValueError:
+                pass
+
+        findings = self.session.get_findings()[-count:]
+        if not findings:
+            print("\033[33mNo findings yet.\033[0m")
+            return
+
+        print(f"\033[1mRecent {len(findings)} findings:\033[0m")
+        for f in findings:
+            sev_colors = {
+                "critical": "\033[31m",
+                "high": "\033[33m",
+                "medium": "\033[93m",
+                "low": "\033[36m",
+                "info": "\033[37m"
+            }
+            color = sev_colors.get(f.severity.value, "\033[37m")
+            print(f"  {color}[{f.severity.value.upper()}]\033[0m {f.title[:60]}")
+            if f.host:
+                print(f"    Host: {f.host}")
+            if f.cve:
+                print(f"    CVE: {f.cve}")
+
+    def _cmd_report(self, args: List[str]) -> None:
+        print("\033[33mGenerating report...\033[0m")
+        from modules.report import generate_report
+        try:
+            report_path = generate_report(
+                session=self.session,
+                logger=self.logger,
+                open_browser=False,
+                purple_mode=self.session.meta.mode.value == "purple"
+            )
+            print(f"\033[32m✅ Report generated: {report_path}\033[0m")
+        except Exception as e:
+            print(f"\033[31mError generating report: {e}\033[0m")
+
+    def _cmd_status(self, args: List[str]) -> None:
+        meta = self.session.meta
+        print("\033[1mSession Status\033[0m")
+        print(f"  ID: {meta.session_id}")
+        print(f"  Target: {meta.target}")
+        print(f"  Mode: {meta.mode.value.upper()}")
+        print(f"  Status: {meta.status.value}")
+        print(f"  Findings: {meta.findings_count}")
+        print(f"  Risk Score: {meta.risk_score:.0f}")
+        print(f"  Modules: {', '.join(meta.modules_done) or 'None'}")
+        print(f"  Created: {meta.created_at}")
+
+    def _cmd_config(self, args: List[str]) -> None:
+        config_path = Path("config/ardf.yaml")
+        if not config_path.exists():
+            print("\033[33mConfig file not found.\033[0m")
+            return
+
+        try:
+            import yaml
+            data = yaml.safe_load(config_path.read_text())
+
+            if args:
+                key = args[0]
+                parts = key.split(".")
+                value = data
+                for part in parts:
+                    if isinstance(value, dict):
+                        value = value.get(part)
+                    else:
+                        break
+                if value is not None:
+                    print(f"\033[36m{key}\033[0m = {json.dumps(value, indent=2)}")
+                else:
+                    print(f"\033[33mKey '{key}' not found.\033[0m")
+            else:
+                relevant = ["recon", "bypass", "workflow", "redteam", "cloudflare", "sqli", "bruteforce", "stealth"]
+                print("\033[1mConfiguration (relevant sections):\033[0m")
+                for section in relevant:
+                    if section in data:
+                        print(f"\n  \033[36m{section}:\033[0m")
+                        print(json.dumps(data[section], indent=4))
+        except Exception as e:
+            print(f"\033[31mError reading config: {e}\033[0m")
+
+    def _cmd_clear(self, args: List[str]) -> None:
+        os.system('cls' if os.name == 'nt' else 'clear')
+
+    def _cmd_exit(self, args: List[str]) -> None:
+        self.running = False
+        print("\033[36mGoodbye!\033[0m")
+
+    # ── Natural language handling ────────────────────────────
+
+    def _handle_natural_language(self, text: str) -> bool:
+        text_lower = text.lower()
+
+        if "sqli" in text_lower or "sql injection" in text_lower:
+            self._cmd_sqli([])
+            return True
+
+        if "bruteforce" in text_lower or "brute force" in text_lower:
+            self._cmd_bruteforce([])
+            return True
+
+        if "bypass" in text_lower and ("cloudflare" in text_lower or "cf" in text_lower):
+            self._cmd_bypass([])
+            return True
+
+        if "workflow" in text_lower:
+            self._cmd_workflow([])
+            return True
+
+        if "origin" in text_lower:
+            self._cmd_origin([])
+            return True
+
+        if "cf status" in text_lower or "cloudflare status" in text_lower:
+            self._cmd_cf_status([])
+            return True
+
+        if "adapt" in text_lower:
+            self._cmd_adapt([])
+            return True
+
+        if "report" in text_lower:
+            self._cmd_report([])
+            return True
+
+        if "findings" in text_lower:
+            self._cmd_findings([])
+            return True
+
+        if "status" in text_lower:
+            self._cmd_status([])
+            return True
+
+        if "tools" in text_lower:
+            self._cmd_tools([])
+            return True
+
+        if "scan" in text_lower:
+            parts = text_lower.split()
+            tool = parts[parts.index("scan") + 1] if "scan" in parts and len(parts) > parts.index("scan") + 1 else "nmap"
+            self._cmd_scan([tool])
+            return True
+
+        if "help" in text_lower:
+            self._cmd_help([])
+            return True
+
+        return False
+
+    # ── Run ──────────────────────────────────────────────────
+
+    def run(self) -> None:
+        print("\033[36m" + r"""
+   ___  ____  ______   ____
+  / _ \/ __ \/ ____/  / __ \____  __
+ /  __/ / / / / __   / / / / __ \/ /
+/ /__/ /_/ / /_/ /  / /_/ / /_/ / /
+\___/\____/\____/  /_____/\____/_/
+                                   """ + "\033[0m")
+        print("\033[1mARDF Chat Interface\033[0m")
+        print("Type \033[36m/help\033[0m for commands or use natural language.")
+        print("Type \033[36m/exit\033[0m to quit.\n")
+
+        while self.running:
+            try:
+                user_input = input(self._prompt()).strip()
+                if not user_input:
+                    continue
+
+                self._save_history()
+
+                if user_input.startswith("/"):
+                    parts = user_input.split()
+                    cmd = parts[0].lower()
+                    args = parts[1:] if len(parts) > 1 else []
+
+                    if cmd in self.commands:
+                        self.commands[cmd](args)
+                    else:
+                        print(f"\033[33mUnknown command: {cmd}\033[0m")
+                        print("Type /help for available commands")
+                else:
+                    if not self._handle_natural_language(user_input):
+                        print("\033[33mCould not understand. Try /help or be more specific.\033[0m")
+
+            except KeyboardInterrupt:
+                print("\n")
+                self._cmd_exit([])
+            except EOFError:
+                print("\n")
+                self._cmd_exit([])
+            except Exception as e:
+                print(f"\033[31mError: {e}\033[0m")
+
+
+def run_chat(session: Session, logger: Optional[ARDFLogger] = None) -> None:
+    if logger is None:
+        logger = get_logger("chat")
+    chat = ChatInterface(session, logger)
+    chat.run()

@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#05070d">
+<title>ARDF // Ops Console</title>
+<link rel="stylesheet" href="/style.css?v=3.1.1">
+</head>
+<body class="theme-tui">
+<div class="fx fx-grid" aria-hidden="true"></div>
+<div class="fx fx-scan" aria-hidden="true"></div>
+<div class="fx fx-glow" aria-hidden="true"></div>
+
+<div id="boot-diag" class="boot-diag hidden" role="alert"></div>
+<noscript><div class="boot-diag"><b>JAVASCRIPT REQUIRED</b> — enable JavaScript to use the ARDF ops console. The API is at <code>/api/v3/</code>.</div></noscript>
+
+<div id="login-overlay" class="login-overlay">
+  <div class="login-frame">
+    <div class="login-scan" aria-hidden="true"></div>
+    <div class="brand brand-large">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-copy"><b>ARDF</b><small>OPS CONSOLE</small></span>
+    </div>
+    <p class="login-kicker">AUTHORIZED ENGAGEMENT ACCESS</p>
+    <h2 class="login-title">Operator authentication</h2>
+    <p class="login-sub">Adaptive Recon &amp; Defense Framework · local-first</p>
+    <p class="login-boot" aria-hidden="true">&gt; initializing operator link<span class="cursor">_</span></p>
+    <form id="login-form" autocomplete="off" onsubmit="login();return false">
+      <label class="field"><span>operator</span>
+        <input id="u" placeholder="username" autocomplete="username">
+      </label>
+      <label class="field"><span>passphrase</span>
+        <input id="p" type="password" placeholder="password" autocomplete="current-password">
+      </label>
+      <button class="button button-primary" type="submit" style="width:100%">Establish link</button>
+      <div id="lerr" class="login-error" role="alert"></div>
+    </form>
+    <div class="login-foot">
+      <span class="dot ok"></span> LOCAL NODE
+      <span class="sep">/</span> scope guard default-on
+      <span class="sep">/</span> v3.1.1
+    </div>
+  </div>
+</div>
+
+<div id="app-shell" class="app-shell hidden">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-copy"><b>ARDF</b><small>OPS CONSOLE</small></span>
+    </div>
+    <div class="side-rule"><span>COMMAND MATRIX</span><i></i></div>
+    <div id="nav" class="nav"></div>
+    <div class="side-foot">
+      <div class="side-status"><span class="dot ok"></span><span id="side-state">LINK READY</span></div>
+      <div class="side-meta">v3.1.1 · TUI PHOSPHOR</div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div class="crumb">
+        <span class="crumb-glyph" aria-hidden="true">⌁</span>
+        <div>
+          <h1 id="title">Overview</h1>
+          <p id="subtitle">command deck · live telemetry</p>
+        </div>
+      </div>
+      <div class="hud">
+        <button class="hud-chip" onclick="openPalette()" title="Command palette (Ctrl+K)">
+          <span class="hud-key">⌘K</span><span>jump</span>
+        </button>
+        <div class="hud-chip"><span class="hud-label">LINK</span>
+          <span id="stream-state" class="hud-value dim">SYNC</span></div>
+        <div class="hud-chip"><span class="hud-label">UTC</span>
+          <span id="clock" class="hud-value">--:--:--</span></div>
+        <button id="theme-btn" class="hud-chip" onclick="toggleTheme()" title="Toggle TUI phosphor / neon theme">
+          <span class="hud-label">THEME</span><span id="theme-label" class="hud-value">TUI</span>
+        </button>
+        <div id="scopebadge" class="badge">scope?</div>
+        <button class="button button-ghost" onclick="logout()">Disconnect</button>
+      </div>
+    </header>
+
+    <div class="ticker" aria-hidden="true">
+      <span class="ticker-tag">FEED</span>
+      <div class="ticker-track"><span id="ticker">awaiting telemetry · SSE stream idle</span></div>
+      <span id="event-count" class="ticker-count">0 EV</span>
+    </div>
+
+    <main class="content">
+      <div id="warn"></div>
+      <div id="view" class="view">
+        <div class="card"><h3>Live console loading…</h3>
+          <p class="muted">If this stays, JavaScript is blocked or failing — press F12 and read the Console tab.</p>
+        </div>
+        <noscript><div class="card"><h3>JavaScript required</h3>
+          <p>Enable JavaScript to use the ops console. API is at /api/v3/.</p></div></noscript>
+      </div>
+    </main>
+
+    <footer class="statusbar">
+      <span><span class="dot ok"></span> NODE <b>ARDF-01</b></span>
+      <span class="sb-sep">|</span>
+      <span>SCOPE <b id="footer-scope">…</b></span>
+      <span class="sb-sep">|</span>
+      <span>EVENTS <b id="footer-events">0</b></span>
+      <span class="sb-sep">|</span>
+      <span>OPERATOR <b id="user-hud">—</b></span>
+      <span class="sb-right">AUTHORIZED ASSESSMENT ONLY · TIER-3 REQUIRES TYPED CONFIRM</span>
+    </footer>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+<div id="palette" class="palette hidden" role="dialog" aria-modal="true" aria-label="Command palette">
+  <div class="palette-box">
+    <div class="palette-head"><span>⌘</span><input id="palette-input" placeholder="Jump to module, view or action…" autocomplete="off" oninput="paletteFilter()"></div>
+    <div id="palette-list" class="palette-list"></div>
+    <div class="palette-foot"><span>↑↓ navigate</span><span>↵ open</span><span>esc close</span></div>
+  </div>
+</div>
+
+<script src="/app.js?v=3.1.1"></script>
+<script>
+window.setTimeout(function () {
+  if (window.__ardfReady) return;
+  var d = document.getElementById("boot-diag");
+  if (!d) return;
+  d.classList.remove("hidden");
+  d.innerHTML = "<b>CONSOLE BOOT FAILED</b> — /app.js did not initialize. " +
+    "Hard-refresh with Ctrl+Shift+R, then check the browser console and that " +
+    "<code>/app.js</code> returns JavaScript (not a login page or 404).";
+}, 4500);
+</script>
+</body>
+</html>

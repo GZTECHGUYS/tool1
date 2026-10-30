@@ -1,0 +1,148 @@
+name: recon_boss
+version: "1.0"
+description: "Recon Like A Boss — wayback through content discovery, then surface build"
+author: ARDF
+mode: red
+
+settings:
+  max_duration_hours: 6
+  confirmation_gates: false
+  save_artifacts: true
+
+target:
+  required_fields:
+    - host
+    - mode
+
+phases:
+
+  - id: phase_01
+    name: wayback_harvest
+    module: modules.recon.wayback
+    function: run
+    depends_on: []
+    confirmation: false
+    timeout_minutes: 20
+    on_failure: continue
+    tags: [recon, passive, wayback]
+
+  - id: phase_02
+    name: dork_pack
+    module: modules.recon.dorkpack
+    function: run
+    depends_on: []
+    confirmation: false
+    timeout_minutes: 5
+    on_failure: continue
+    tags: [recon, passive, dorks]
+
+  - id: phase_03
+    name: passive_recon
+    module: modules.recon
+    function: run_recon
+    depth: passive
+    depends_on: []
+    confirmation: false
+    timeout_minutes: 60
+    on_failure: continue
+    tags: [recon, passive, osint]
+
+  - id: phase_04
+    name: subdomain_permute
+    module: modules.recon.subpermute
+    function: run
+    depends_on: [phase_03]
+    confirmation: false
+    timeout_minutes: 60
+    on_failure: continue
+    tags: [recon, subdomain]
+
+  - id: phase_05
+    name: subdomain_validate
+    module: modules.recon.subvalidate
+    function: run
+    depends_on: [phase_04]
+    confirmation: false
+    timeout_minutes: 60
+    on_failure: continue
+    tags: [recon, subdomain]
+
+  - id: phase_06
+    name: cohosted_asn
+    module: modules.recon.cohosted
+    function: run
+    depends_on: [phase_05]
+    confirmation: false
+    timeout_minutes: 20
+    on_failure: continue
+    tags: [recon, infra]
+
+  - id: phase_07
+    name: normal_recon
+    module: modules.recon
+    function: run_recon
+    depth: normal
+    depends_on: [phase_05]
+    confirmation: false
+    timeout_minutes: 120
+    on_failure: continue
+    tags: [recon, active, portscan]
+
+  - id: phase_08
+    name: api_js_surface
+    module: modules.recon.api_discovery
+    function: run_api_discovery
+    depends_on: [phase_07]
+    confirmation: false
+    timeout_minutes: 30
+    on_failure: continue
+    tags: [recon, api]
+
+  - id: phase_09
+    name: s3_github
+    module: modules.recon.s3_enum
+    function: run
+    depends_on: [phase_07]
+    confirmation: false
+    timeout_minutes: 30
+    on_failure: continue
+    tags: [recon, cloud]
+
+  - id: phase_10
+    name: crawler_surface
+    module: modules.recon.crawler
+    function: run
+    depends_on: [phase_08]
+    confirmation: false
+    timeout_minutes: 30
+    on_failure: continue
+    tags: [recon, crawl, forms]
+
+  - id: phase_11
+    name: report_generation
+    module: modules.report
+    function: generate_report
+    depends_on: [phase_08, phase_09, phase_10]
+    confirmation: false
+    timeout_minutes: 10
+    on_failure: abort
+    tags: [report, output]
+
+ai_decisions:
+  enabled: true
+  model: qwen2.5:0.5b
+  fallback_model: tinyllama:1.1b
+  decisions:
+    - on: new_subdomain
+      action: expand_attack_surface
+    - on: phase_complete
+      action: summarise_and_plan_next
+
+reporting:
+  format: html
+  include_sections:
+    - executive_summary
+    - attack_surface
+    - findings
+  severity_threshold: info
+  risk_score: true

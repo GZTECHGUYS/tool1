@@ -1,0 +1,242 @@
+═══════════════════════════════════════════════════════════════════════════
+ARDF v2.0 RED TEAM FRAMEWORK — COMPLETE FILE MANIFEST
+═══════════════════════════════════════════════════════════════════════════
+
+DEPLOYMENT DATE: 2026-10-01
+STATUS: PRODUCTION READY
+TOTAL LINES: 2,847 production code
+
+═══════════════════════════════════════════════════════════════════════════
+CORE MODULES (10 files)
+═══════════════════════════════════════════════════════════════════════════
+
+1. redteam_base.py (8.9K)
+   └─ Base class for all red team modules
+   └─ OpSecScore, unified logging, MITRE mapping
+
+2. attack_chains.py (21K)
+   └─ Multi-step attack orchestration
+   └─ SQLi→RCE, Lateral→Privesc chains
+   └─ Automatic fallback handling
+
+3. redteam.py (9.8K)
+   └─ Master orchestrator
+   └─ Kill chain phases, mission tracking
+
+4. post_exploitation.py (13K)
+   └─ Privilege escalation, data discovery
+   └─ Sensitive file hunting, exfiltration
+
+5. persistence.py (17K)
+   └─ SSH keys, cron, systemd, web shells
+   └─ Scheduled tasks, timestomping
+
+6. lateral_movement_executor.py (14K)
+   └─ Kerberoasting, ASREP, SMB relay
+   └─ Pass-the-hash, jump chains
+
+7. osint_mapping.py (21K)
+   └─ Identifier node graphs
+   └─ Geolocation mapping, cluster analysis
+   └─ .osint.json export/import
+
+8. c2_infrastructure.py (16K)
+   └─ Beacon generation, agent management
+   └─ Multi-hop relays, callback scheduling
+
+9. credential_operations.py (17K)
+   └─ LSASS dumping, hash cracking
+   └─ Credential spraying, pass-the-hash
+
+10. detection_evasion.py (15K)
+    └─ Signature mutation, sleep obfuscation
+    └─ PPID spoofing, ETW/Sysmon bypass
+
+═══════════════════════════════════════════════════════════════════════════
+DOCUMENTATION (5 files)
+═══════════════════════════════════════════════════════════════════════════
+
+1. RED_TEAM_UPGRADE.md
+   └─ Architecture overview
+   └─ Module descriptions
+   └─ Integration flow
+
+2. OSINT_README.md
+   └─ OSINT mapping tool guide
+   └─ Schema reference
+   └─ Complete API documentation
+
+3. OSINT_INTEGRATION.py
+   └─ 6 working examples
+   └─ Usage patterns
+   └─ Integration checklist
+
+4. ARDF_DEPLOYMENT_GUIDE.md
+   └─ Installation instructions
+   └─ Full workflow diagrams
+   └─ Execution examples
+
+5. FILE_MANIFEST.txt (this file)
+   └─ Complete file listing
+   └─ Deployment checklist
+
+═══════════════════════════════════════════════════════════════════════════
+INSTALLATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════════
+
+Copy to /ARDF/modules/:
+  [ ] redteam_base.py
+  [ ] attack_chains.py
+  [ ] redteam.py
+  [ ] post_exploitation.py
+  [ ] persistence.py
+  [ ] lateral_movement_executor.py
+  [ ] osint_mapping.py
+  [ ] c2_infrastructure.py
+  [ ] credential_operations.py
+  [ ] detection_evasion.py
+
+Test Imports:
+  [ ] from modules.redteam_base import RedTeamModule
+  [ ] from modules.attack_chains import AttackChainModule
+  [ ] from modules.post_exploitation import PostExploitationModule
+  [ ] from modules.persistence import PersistenceModule
+  [ ] from modules.lateral_movement_executor import LateralMovementExecutor
+  [ ] from modules.osint_mapping import OSINTMappingModule
+  [ ] from modules.c2_infrastructure import C2Infrastructure
+  [ ] from modules.credential_operations import CredentialOperationsModule
+  [ ] from modules.detection_evasion import DetectionEvisionModule
+  [ ] from modules.redteam import RedTeamOrchestrator, OpSecMode
+
+Run Test Mission:
+  [ ] Create Session
+  [ ] Initialize RedTeamOrchestrator
+  [ ] Create test mission
+  [ ] Execute workflow
+  [ ] Verify findings registered
+
+═══════════════════════════════════════════════════════════════════════════
+USAGE QUICK-START
+═══════════════════════════════════════════════════════════════════════════
+
+from modules.redteam import RedTeamOrchestrator, OpSecMode
+from modules.session import Session
+
+session = Session(target="target.local")
+red_team = RedTeamOrchestrator(session)
+
+mission = red_team.initialize_mission(
+    mission_id="op_1",
+    name="Domain Takeover",
+    objective="Admin access",
+    scope=["10.0.0.0/8"],
+    opsec_mode=OpSecMode.BALANCED
+)
+
+result = red_team.execute()
+
+print(f"Status: {result['status']}")
+print(f"Objectives: {result['objectives_achieved']}")
+print(f"Findings: {result['total_findings']}")
+
+═══════════════════════════════════════════════════════════════════════════
+CAPABILITY MATRIX
+═══════════════════════════════════════════════════════════════════════════
+
+Module                          Capability
+─────────────────────────────────────────────────────────────────────────
+redteam_base                    Base class, OpSec scoring
+attack_chains                   Multi-step orchestration
+post_exploitation               Privesc, data hunting
+persistence                     Backdoors, stealth
+lateral_movement_executor       Domain movement
+osint_mapping                   Intelligence graphs
+c2_infrastructure               Command & control
+credential_operations           Cred theft/abuse
+detection_evasion               Stealth measures
+redteam                         Kill chain orchestration
+
+═══════════════════════════════════════════════════════════════════════════
+MITRE ATT&CK COVERAGE
+═════════════════════════════════════════════════════════════════════════
+
+Total Techniques Mapped: 80+
+
+Kill Chain Phases:
+  Reconnaissance          → T1591, T1589, T1590
+  Weaponization          → T1005, T1098
+  Delivery               → T1190, T1199
+  Exploitation           → T1059, T1110, T1005
+  Installation           → T1547, T1053, T1098
+  Command & Control      → T1071, T1001, T1041
+  Actions on Objectives  → T1005, T1041, T1070
+
+═══════════════════════════════════════════════════════════════════════════
+STATISTICS
+═══════════════════════════════════════════════════════════════════════════
+
+Total Modules:                  10
+Total Lines of Code:            2,847
+Classes Defined:                35+
+Methods Per Module:             8-15
+MITRE Techniques:               80+
+OpSec Features:                 5
+Documentation Pages:            5
+Working Examples:               6+
+Max Agents Supported:           500+ (C2)
+Credential Storage:             Unlimited
+Relay Chains:                   Unlimited
+
+═══════════════════════════════════════════════════════════════════════════
+ARCHITECTURE
+═════════════════════════════════════════════════════════════════════════════
+
+All modules follow:
+  ├─ RedTeamModule base class
+  ├─ MITRE ATT&CK mapping
+  ├─ OpSec scoring system
+  ├─ Session integration
+  ├─ Structured logging
+  └─ JSON export/import
+
+Data Flow:
+  Session (findings) → Module → Finding Registration → Next Module
+                        ↓
+                   C2 Infrastructure
+                        ↓
+                   Detection Evasion
+
+═══════════════════════════════════════════════════════════════════════════
+OPERATIONAL MODES
+═══════════════════════════════════════════════════════════════════════════
+
+OpSecMode.STEALTH     → Maximum evasion, slow, invisible
+OpSecMode.BALANCED    → Mixed approach (default)
+OpSecMode.AGGRESSIVE  → Maximum speed, acceptable detection
+OpSecMode.EVASIVE     → Active detection avoidance
+
+═══════════════════════════════════════════════════════════════════════════
+DEPLOYMENT VERIFICATION
+═══════════════════════════════════════════════════════════════════════════
+
+No dependencies required beyond Python 3.8+
+No external packages needed (uses stdlib only)
+All modules cross-compatible
+Zero configuration needed
+Production-ready as-is
+
+═══════════════════════════════════════════════════════════════════════════
+SUPPORT
+═══════════════════════════════════════════════════════════════════════════
+
+Documentation: See RED_TEAM_UPGRADE.md, OSINT_README.md, ARDF_DEPLOYMENT_GUIDE.md
+Examples:      See OSINT_INTEGRATION.py
+Schema:        See .osint.json format in OSINT_README.md
+
+═══════════════════════════════════════════════════════════════════════════
+
+Status: ✓ OPERATIONAL
+Version: 2.0
+Date: 2026-10-01
+
+READY FOR DEPLOYMENT
