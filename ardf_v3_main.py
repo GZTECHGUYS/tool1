@@ -137,12 +137,6 @@ class ARDFv3Application:
                     self.config["dashboard"].update(dashboard_config)
             except Exception:
                 pass
-            import os
-            # Must be set before the API object reads it in __init__.
-            os.environ["ARDF_AUTH_KEY"] = str(
-                dashboard_config.get("auth_key") or
-                os.getenv("ARDF_AUTH_KEY", "change_me"))
-
             self.dashboard = ARDFv3DashboardAPI(
                 self.framework,
                 host=dashboard_config.get("host", "0.0.0.0"),
@@ -150,11 +144,19 @@ class ARDFv3Application:
                 debug=dashboard_config.get("debug", False)
             )
 
+            import os
+            os.environ["ARDF_AUTH_KEY"] = dashboard_config.get("auth_key", "change_me")
+
+            self.logger.info(
+                f"Starting dashboard on {dashboard_config.get('host')}:"
+                f"{dashboard_config.get('port')}"
+            )
+
             self.dashboard.run()
             return True
         except ImportError:
             self.logger.warning("Flask not installed. Dashboard unavailable.")
-            self.logger.info("Install with: pip install flask (flask-cors is optional)")
+            self.logger.info("Install with: pip install flask flask-cors")
             return False
         except Exception as e:
             self.logger.error(f"Dashboard startup error: {e}")

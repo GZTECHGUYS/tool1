@@ -4,72 +4,28 @@
 import os
 import json
 import logging
+import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
 from functools import wraps
 from datetime import datetime, timedelta
 import hashlib
-import hmac
 
 try:
     from flask import Flask, jsonify, request, render_template_string, send_file, Response
-    FLASK_AVAILABLE = True
-except ImportError:  # pragma: no cover - exercised only without Flask
-    FLASK_AVAILABLE = False
-
-try:
     from flask_cors import CORS
-    CORS_AVAILABLE = True
-except ImportError:  # flask-cors is optional; the console is same-origin
-    CORS = None
-    CORS_AVAILABLE = False
+    FLASK_AVAILABLE = True
+except ImportError:
+    FLASK_AVAILABLE = False
 
 
 class ARDFv3DashboardAPI:
     """Dashboard API server for ARDF v3."""
 
-    @staticmethod
-    def _port_available(host: str, port: int) -> bool:
-        """Return True when host:port can be bound right now."""
-        import socket
-        try:
-            family = socket.AF_INET6 if ":" in host else socket.AF_INET
-            with socket.socket(family, socket.SOCK_STREAM) as sock:
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                sock.bind((host, port))
-            return True
-        except OSError:
-            return False
-
-    def _resolve_port(self) -> int:
-        """Keep the configured port when free, otherwise step forward.
-
-        A dead dashboard is worse than a shifted port: if another service is
-        already on 5000 (common with local OSINT tools), ARDF tries the next
-        ten ports and loudly prints the URL it actually bound.
-        """
-        if self._port_available(self.host, self.port):
-            return self.port
-        requested = self.port
-        for candidate in range(requested + 1, requested + 11):
-            if self._port_available(self.host, candidate):
-                self.logger.warning(
-                    "Dashboard port %s is already in use; ARDF is starting on "
-                    "%s instead.", requested, candidate)
-                shown = "127.0.0.1" if self.host in ("0.0.0.0", "::") else self.host
-                print("\n" + "=" * 68)
-                print(f" PORT {requested} IS BUSY — ARDF IS USING {candidate}")
-                print(f" Open http://{shown}:{candidate}/")
-                print("=" * 68 + "\n")
-                return candidate
-        raise RuntimeError(
-            f"dashboard port {requested} is in use and ports "
-            f"{requested + 1}-{requested + 10} are also unavailable; "
-            f"stop the other service or pass --port <free-port>")
-
     def __init__(self, framework, host: str = "0.0.0.0", port: int = 5000, debug: bool = False):
         if not FLASK_AVAILABLE:
-            raise RuntimeError("Flask is required for dashboard. Install with: pip install flask (flask-cors is optional)")
+            raise RuntimeError("Flask is required for dashboard. Install with: pip install flask flask-cors")
 
         self.framework = framework
         self.host = host
@@ -78,17 +34,7 @@ class ARDFv3DashboardAPI:
         self.app = Flask(__name__)
         self.logger = logging.getLogger("ARDFv3Dashboard")
 
-        # The console is served from the same origin, so CORS is not needed
-        # by default. If an operator explicitly enables it, allow only the
-        # configured origins instead of the historical wildcard.
-        origins = os.getenv("ARDF_CORS_ORIGINS", "").strip()
-        if CORS_AVAILABLE and origins:
-            CORS(self.app, resources={r"/api/*": {"origins": [
-                o.strip() for o in origins.split(",") if o.strip()]}})
-        elif origins:
-            self.logger.warning(
-                "ARDF_CORS_ORIGINS is set but flask-cors is not installed; "
-                "the console will stay same-origin.")
+        CORS(self.app)
 
         self.auth_key = os.getenv("ARDF_AUTH_KEY", "default_key_change_me")
         self.active_sessions = {}
@@ -137,99 +83,6 @@ class ARDFv3DashboardAPI:
         @self.require_auth
         def dashboard_summary():
             return jsonify(self.get_dashboard_summary())
-
-        @self.app.route("/api/v3/dashboard/telemetry", methods=["GET"])
-        @self.require_auth
-        def dashboard_telemetry():
-            """Compact live-telemetry payload for the sci-fi console HUD."""
-            from modules.session import get_manager
-            try:
-                sessions = get_manager().list_sessions()
-            except Exception:
-                sessions = []
-            sev = {k: 0 for k in ("critical", "high", "medium", "low", "info")}
-            # Meta already carries the authoritative findings_count. Only
-            # read recent findings files for the severity histogram.
-            for s in sessions[:12]:
-                path = get_manager().root / s.get("session_id", "") / \
-                    "findings.jsonl"
-                try:
-                    for line in path.read_text().splitlines():
-                        if not line.strip():
-                            continue
-                        try:
-                            f = json.loads(line)
-                        except Exception:
-                            continue
-                        k = str(f.get("severity", "info")).lower()
-                        if k in sev:
-                            sev[k] += 1
-                except Exception:
-                    continue
-            try:
-                jobs = self.jobs.list_jobs()
-            except Exception:
-                jobs = []
-            active_jobs = [j for j in jobs if j.get("status") in
-                           ("queued", "running", "waiting_approval")]
-            try:
-                pending = len(self.jobs.list_approvals())
-            except Exception:
-                pending = 0
-            try:
-                from ops import events as _ev
-
-                ev_stats = _ev.stats()
-                recent_events = _ev.since(max(0, ev_stats.get("last_id", 0) - 30))[-14:]
-            except Exception:
-                ev_stats, recent_events = {}, []
-            try:
-                from modules import attacks as _atk
-
-                atk = _atk.list_attacks()
-                phases = {}
-                for a in atk:
-                    phases[a["phase"]] = phases.get(a["phase"], 0) + 1
-            except Exception:
-                atk, phases = [], {}
-            try:
-                preflight_ready = None
-                from modules.preflight import check as _pf
-                preflight_ready = bool(_pf().get("ready"))
-            except Exception:
-                preflight_ready = None
-            return jsonify({
-                "version": "3.1.1",
-                "timestamp": datetime.now().isoformat(),
-                "scope": {"enabled": bool(self.scope.enabled),
-                          "targets": len(self.scope.allowed_targets)},
-                "sessions": {"total": len(sessions),
-                             "active": len([s for s in sessions if
-                                            s.get("status") in
-                                            ("created", "running", "paused")])},
-                "findings": {
-                    "total": sum(int(s.get("findings_count", 0) or 0)
-                                 for s in sessions),
-                    "by_severity": sev,
-                    "risk": round(sum(float(s.get("risk_score", 0) or 0)
-                                      for s in sessions), 2),
-                },
-                "jobs": {"total": len(jobs),
-                         "active": len(active_jobs),
-                         "by_status": {st: len([j for j in jobs
-                                                if j.get("status") == st])
-                                       for st in {j.get("status") for j in jobs}}},
-                "approvals": {"pending": pending},
-                "attacks": {"total": len(atk), "by_phase": phases},
-                "modules": {"loaded": self.framework.get_framework_state().get("modules_loaded", 0),
-                            "failed": self.framework.get_framework_state().get("modules_failed", 0)},
-                "endpoints": {"api_routes": len([
-                    r for r in self.app.url_map.iter_rules()
-                    if r.rule.startswith("/api/")])},
-                "stream": ev_stats,
-                "preflight_ready": preflight_ready,
-                "recent_events": recent_events,
-            })
 
         @self.app.route("/api/v3/modules/list", methods=["GET"])
         @self.require_auth
@@ -497,7 +350,7 @@ class ARDFv3DashboardAPI:
                         yield f"data: {json.dumps({'line': line})}\n\n"
                     seen = data["next"]
                     job = self.jobs.jobs.get(jid, {})
-                    if job.get("status") in ("complete", "failed", "killed"):
+                    if job.get("status") in ("complete", "failed"):
                         yield f"data: {json.dumps({'status': job.get('status')})}\n\n"
                         break
                     _t.sleep(1)
@@ -715,53 +568,6 @@ class ARDFv3DashboardAPI:
         def scope_status():
             return jsonify({"enabled": self.scope.enabled,
                             "allowed_targets": self.scope.allowed_targets})
-
-        @self.app.route("/api/v3/attacks", methods=["GET"])
-        @self.require_auth
-        def attacks_list():
-            from modules import attacks as _atk
-
-            return jsonify({"attacks": _atk.list_attacks()})
-
-        @self.app.route("/api/v3/attacks/run", methods=["POST"])
-        @self.require_auth
-        def attacks_run():
-            from modules import attacks as _atk
-            from modules.logger import get_logger
-            from ops import events as _ev
-
-            data = request.get_json() or {}
-            sid = data.get("session_id", "")
-            s, err = (None, None)
-            if sid:
-                s, err = _session_or_404(sid)
-                if err:
-                    return err
-            if s is None:
-                return jsonify({"error": "need session_id"}), 400
-            spec = dict(data.get("spec", {}) or {})
-            # The console sends mode/confirm_text/target at the top level;
-            # older clients put them in spec. Accept both, with spec winning.
-            for key in ("mode", "confirm_text", "target"):
-                if key not in spec and data.get(key) not in (None, ""):
-                    spec[key] = data.get(key)
-            spec.setdefault("mode", data.get("mode") or "plan")
-            attack_id = str(data.get("attack", ""))
-            out = _atk.run_attack(s, attack_id, spec,
-                                  get_logger("attacks"))
-            self.ops_auth.audit("attack.run",
-                                getattr(request, "ops_user", "?"),
-                                "success" if out.get("ok") else "error",
-                                f"{attack_id}:{sid}")
-            _ev.publish("attack.ran", {
-                "attack": attack_id,
-                "session_id": sid,
-                "ok": out.get("ok"),
-                "mode": out.get("mode", data.get("mode", "")),
-                "target": spec.get("target", ""),
-            })
-            code = 200 if out.get("ok") else 400
-            return jsonify({"result": out}), code
 
         @self.app.route("/api/v3/scope/targets", methods=["POST"])
         @self.require_auth
@@ -1243,6 +1049,121 @@ class ARDFv3DashboardAPI:
             from modules import proxy_chain as _pc
             return jsonify(_pc.egress_verify())
 
+        # ── Engagement-scoped offensive module runs ──
+        @self.app.route("/api/v3/engagements/modules", methods=["GET"])
+        @self.require_auth
+        def engagement_modules():
+            from ardf.offensive.base import OFFENSIVE_MODULES
+            return jsonify({"modules": [
+                {"id": module_id, **spec}
+                for module_id, spec in OFFENSIVE_MODULES.items()
+            ]})
+
+        @self.app.route("/api/v3/engagements/<eid>", methods=["GET"])
+        @self.require_auth
+        def engagement_summary(eid):
+            from ardf.offensive.base import EngagementStore
+            try:
+                out = EngagementStore().summary(eid)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            except FileNotFoundError:
+                out = {"engagement": eid, "results": [], "logs": [],
+                       "result_count": 0, "log_count": 0}
+            return jsonify(out)
+
+        @self.app.route("/api/v3/engagements/<eid>/run", methods=["POST"])
+        @self.require_auth
+        def engagement_run(eid):
+            from ardf.offensive.base import EngagementStore, OFFENSIVE_MODULES
+            data = request.get_json() or {}
+            module_id = data.get("module", "")
+            target = (data.get("target") or "").strip()
+            facts = data.get("facts") or {}
+
+            if module_id not in OFFENSIVE_MODULES:
+                return jsonify({"error": "unknown module"}), 400
+            if not target:
+                return jsonify({"error": "target required"}), 400
+            if not isinstance(facts, dict):
+                return jsonify({"error": "facts must be a JSON object"}), 400
+            try:
+                eid = EngagementStore.sanitize(eid)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+
+            ok, reason = self.scope.validate(target)
+            if not ok:
+                return jsonify({"error": reason}), 403
+
+            spec = OFFENSIVE_MODULES[module_id]
+            cmd = [
+                sys.executable, "-m", spec["module"],
+                "--target", target,
+                "--engagement", eid,
+                "--authorized-by", getattr(request, "ops_user", "operator"),
+                "--facts-json", json.dumps(facts),
+                "--json",
+            ]
+            if data.get("allow_destructive"):
+                cmd.append("--allow-destructive")
+            env = os.environ.copy()
+            env["PYTHONPATH"] = (
+                str(Path(__file__).parent) + os.pathsep + env.get("PYTHONPATH", "")
+            )
+            try:
+                proc = subprocess.run(
+                    cmd, cwd=str(Path(__file__).parent), env=env,
+                    capture_output=True, text=True, timeout=120,
+                )
+            except subprocess.TimeoutExpired:
+                return jsonify({"error": "module timed out"}), 504
+            if proc.returncode != 0:
+                message = (proc.stderr or "module failed").strip()[:2000]
+                return jsonify({"error": message}), 400
+            try:
+                payload = json.loads(proc.stdout)
+            except json.JSONDecodeError:
+                return jsonify({
+                    "error": "module returned invalid JSON",
+                    "stdout": proc.stdout[:2000],
+                }), 500
+
+            self.ops_auth.audit(
+                "engagement.run",
+                getattr(request, "ops_user", "?"),
+                "success",
+                f"{eid}:{module_id}",
+            )
+            self.log_request("POST", f"/api/v3/engagements/{eid}/run", "success")
+            return jsonify(payload), 201
+
+        @self.app.route("/api/v3/engagements/<eid>/file", methods=["GET"])
+        @self.require_auth
+        def engagement_file(eid):
+            from ardf.offensive.base import EngagementStore
+            relative = request.args.get("path", "")
+            try:
+                path = EngagementStore().read(eid, relative)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            except FileNotFoundError:
+                return jsonify({"error": "not found"}), 404
+            return send_file(str(path), as_attachment=True)
+
+        @self.app.route("/api/v3/engagements/<eid>/download", methods=["GET"])
+        @self.require_auth
+        def engagement_download(eid):
+            from ardf.offensive.base import EngagementStore
+            try:
+                archive = EngagementStore().zip(eid)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            except FileNotFoundError:
+                return jsonify({"error": "not found"}), 404
+            return send_file(str(archive), as_attachment=True,
+                             download_name=f"{eid}.zip")
+
         @self.app.errorhandler(404)
         def not_found(e):
             return jsonify({"error": "Not found"}), 404
@@ -1285,9 +1206,7 @@ class ARDFv3DashboardAPI:
             out["using_defaults"] = self.ops_auth.using_defaults()
             return jsonify(out), 200
 
-        if key and hmac.compare_digest(
-                hashlib.sha256(key.encode()).hexdigest(),
-                hashlib.sha256(self.auth_key.encode()).hexdigest()):
+        if key and hashlib.sha256(key.encode()).hexdigest() == hashlib.sha256(self.auth_key.encode()).hexdigest():
             token = hashlib.sha256(f"{key}{datetime.now().isoformat()}".encode()).hexdigest()
             self.active_sessions[token] = {
                 "created": datetime.now().isoformat(),
@@ -1307,7 +1226,7 @@ class ARDFv3DashboardAPI:
         """Get dashboard summary data."""
         state = self.framework.get_framework_state()
         return {
-            "version": "3.1.1",
+            "version": "3.0.0",
             "status": "running" if state.get("initialized") else "initializing",
             "uptime": state.get("start_time"),
             "modules": {
@@ -1316,9 +1235,7 @@ class ARDFv3DashboardAPI:
                 "total": state.get("modules_loaded", 0) + state.get("modules_failed", 0)
             },
             "endpoints": {
-                "total": len([r for r in self.app.url_map.iter_rules()
-                              if r.rule.startswith("/api/")]),
-                "registered": state.get("endpoints_registered", 0),
+                "total": state.get("endpoints_registered", 0),
                 "categories": len(self.framework.endpoints.get_categories())
             },
             "timestamp": datetime.now().isoformat()
@@ -1332,7 +1249,6 @@ class ARDFv3DashboardAPI:
         return {
             "framework": {
                 "version": "3.0.0",
-                "console_version": "3.1.1",
                 "initialized": state.get("initialized", False),
                 "uptime": state.get("start_time")
             },
@@ -1340,9 +1256,7 @@ class ARDFv3DashboardAPI:
                 "total": state.get("modules_loaded", 0) + state.get("modules_failed", 0),
                 "loaded": state.get("modules_loaded", 0),
                 "failed": state.get("modules_failed", 0),
-                "categories": len({m.get("category") for m in
-                                   state.get("modules_info", {}).values()
-                                   if isinstance(m, dict)})
+                "categories": len(state.get("modules_info", {}))
             },
             "endpoints": {
                 "total": len(endpoints.endpoints),
@@ -1357,16 +1271,11 @@ class ARDFv3DashboardAPI:
         }
 
     def _count_methods(self) -> Dict[str, int]:
-        """Count endpoints by HTTP method (keys are 'METHOD path')."""
-        counts: Dict[str, int] = {}
+        """Count endpoints by HTTP method."""
+        counts = {}
         for key in self.framework.endpoints.endpoints.keys():
-            method = str(key).split(" ", 1)[0].upper()
+            method = key.split(":")[0]
             counts[method] = counts.get(method, 0) + 1
-        for rule in self.app.url_map.iter_rules():
-            if rule.endpoint == "static":
-                continue
-            for method in (rule.methods or set()) - {"HEAD", "OPTIONS"}:
-                counts[method] = counts.get(method, 0) + 1
         return counts
 
     def execute_user_endpoint(self) -> Tuple[str, int]:
@@ -1414,7 +1323,6 @@ class ARDFv3DashboardAPI:
 
     def run(self) -> None:
         """Start the dashboard server."""
-        self.port = self._resolve_port()
         self.logger.info(f"Starting ARDF v3 Dashboard on {self.host}:{self.port}")
         self.app.run(host=self.host, port=self.port, debug=self.debug)
 

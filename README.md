@@ -1,6 +1,6 @@
 # ARDF — Autonomous Red/Blue Defense Framework
 
-**Version:** 3.1.0 — NightHawk
+**Version:** 1.0.0 — NightHawk  
 **Mode:** Offline-first | Local AI | Kali-native
 
 ---
@@ -25,6 +25,12 @@ ardf/
 │   ├── ardf.yaml              Global configuration
 │   ├── playbooks/             Mission playbooks (YAML)
 │   └── wordlists.yaml         Wordlist path registry
+│
+├── ardf/                      Assessment package
+│   └── offensive/
+│       ├── base.py            Scope gate and engagement storage
+│       ├── runner.py          Module dispatch
+│       └── modules/           22 modules grouped by domain
 │
 ├── ai/                        Local AI layer (Ollama)
 │   ├── local_model.py         Ollama interface
@@ -82,6 +88,21 @@ ardf/
     └── test_decision_engine.py
 ```
 
+### Offensive assessment modules
+
+The 22 assessment modules live under `ardf/offensive/modules/`, grouped by
+domain. Run one by id:
+
+```bash
+python -m ardf.offensive.run_module adcs_abuse_suite \
+  --target 10.0.0.5 \
+  --engagement ENG-2026-001 \
+  --authorized-by alice \
+  --facts-json '{"templates": [...]}'
+```
+
+Root `offensive_base.py` and `offensive_runner.py` are compatibility shims.
+
 ---
 
 ## Quick Start
@@ -135,71 +156,6 @@ python ardf.py --sessions
 ```bash
 pytest tests/ -v --tb=short
 ```
-
----
-
-## Web Ops Console (v3.1.1)
-
-The browser console is a full operator deck over the same Flask API and
-session/job engine — not a separate or reduced tool path.
-
-```bash
-python ardf_v3_main.py --dashboard
-# open http://127.0.0.1:5000
-```
-
-If port 5000 is already used (a local OSINT console or another service), ARDF
-automatically tries 5001–5010 and prints the actual URL in a banner instead of
-exiting. Pass `--port <n>` to pin a specific free port.
-
-**Console surfaces**
-
-- **Overview** — live sessions/findings/jobs/approval counters, severity load,
-  scope status, module health, preflight readiness and a streaming event feed.
-- **Module Grid** — all 37 P1/P2/P3 modules as filterable cards, with a runner
-  that shows the required confirmation word before execution.
-- **Attack Runner / Attack Chains** — the full offensive registry and guarded
-  chain executor, with Tier-2 `APPROVE` and Tier-3 typed `CONFIRM` gates.
-- **Sessions, Findings, Surface, Recon+, Reports, C2, Payloads, OPSEC, V2
-  Toolkit, Terminal** — the existing operational views, restyled and wired.
-- **Command palette** — press `Ctrl/Cmd+K` to jump to any view or action.
-- **TUI phosphor theme** — glowing green CRT scanline mode with a persisted
-  `THEME` toggle in the HUD (switch back to the cyan neon deck any time).
-  Force either deck with `/?theme=tui` or `/?theme=neon`.
-- **Live HUD** — UTC clock, SSE link state, policy banner and event ticker.
-- **Boot diagnostics** — if `app.js` fails to initialize or the API does not
-  answer within 12 seconds, the console says so and offers a retry instead of
-  hanging on the loading card. Static assets are version-tagged to bust stale
-  browser caches.
-
-**P3 posture pack**
-
-P3 adds 17 modules (11 bounded checks + 6 Tier-3 runbooks) for TLS/certificate
-posture, SPF/DMARC/DKIM, DNS hygiene and DNSSEC, security headers and cookies,
-JWT claims, CORS reflection, admin-surface discovery, client-side secret
-leaks, SMB signing, SSH banners and GraphQL introspection. The runbooks cover
-request smuggling, cache poisoning, API BOLA/IDOR, cloud metadata, AD CS and
-supply-chain review.
-
-Every module enforces `scope.allowed_targets` before network activity; redirects
-and candidate URLs discovered in findings are scope-checked again. Tier-2 runs
-need `APPROVE` (a stronger `CONFIRM` is also accepted); Tier-3 always needs the
-typed word `CONFIRM`.
-
-**Console API and auth**
-
-- `GET /api/v3/dashboard/telemetry` — compact HUD payload (scope, sessions,
-  findings by severity, jobs, approvals, attack phases, module health, recent
-  events).
-- Login uses `dashboard.users` argon2 hashes in `config/ardf.yaml`. If no users
-  are configured, the legacy `admin` / `changeme` account is used and the
-  console shows a warning — change it before exposure.
-- The console is same-origin by default. `flask-cors` is optional; CORS is only
-  enabled when `ARDF_CORS_ORIGINS` is set to an explicit comma-separated list.
-- Bind to `127.0.0.1` unless you have a TLS reverse proxy and an engagement
-  reason to expose the console.
-
-See `docs/P3_ROADMAP.md` for the module-by-module status and fix log.
 
 ---
 
