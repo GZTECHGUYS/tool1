@@ -378,6 +378,7 @@
     ["payloads", "Payloads", "ARSENAL", "▧"],
     ["v2", "V2 Toolkit", "ARSENAL", "⧉"],
     ["term", "Terminal", "SYSTEM", "▸"],
+    ["settings", "Settings", "SYSTEM", "⚒"],
   ];
 
   function nav() {
@@ -836,22 +837,41 @@
     },
 
     c2: function () {
-      return api("GET", "/api/v3/c2/overview").then(function (r) {
+      var st;
+      return api("GET", "/api/v3/c2/listener/status").then(function (r) {
+        st = r.d || {};
+        return api("GET", "/api/v3/c2/overview");
+      }).then(function (r) {
         var list = r.d.agents || [];
         setTitle("C2");
-        var h = '<div class="card"><h3>Agents (' + list.length + ")</h3><table>" +
-          "<tr><th>ID</th><th>Status</th></tr>";
+        var h = '<div class="card"><h3>Listener: ' +
+          (st.running ? '<b class="good">RUNNING ' + esc(String(st.host)) +
+             ":" + esc(String(st.port)) + "</b>" : '<b class="bad">stopped</b>') +
+          "</h3>" +
+          '<div class="row"><input id="ch" value="127.0.0.1" size="14">' +
+          '<input id="cp" value="4443" size="6">' +
+          '<button class="button" onclick="c2l(true)">Start</button>' +
+          '<button class="button" onclick="c2l(false)">Stop</button></div>' +
+          "<p>Agents beacon in over JSON-lines TCP using the controller " +
+          "token (shown at start). Channels dns/icmp/websocket/p2p are " +
+          "not implemented.</p></div>";
+        h += '<div class="card"><h3>Agents (' + list.length + ")</h3><table>" +
+          "<tr><th>ID</th><th>Host</th><th>User</th><th>Status</th><th>Pending</th></tr>";
         for (var i = 0; i < list.length; i++) {
-          var label = list[i].id || JSON.stringify(list[i]).slice(0, 40);
-          h += "<tr><td>" + esc(label) + "</td><td>" +
-            esc(list[i].status || "") + "</td></tr>";
+          var a = list[i];
+          var label = a.agent_id || a.id || JSON.stringify(a).slice(0, 40);
+          var pend = a.pending_commands === undefined ? "" : a.pending_commands;
+          h += "<tr><td>" + esc(label) + "</td><td>" + esc(a.hostname || "") +
+            "</td><td>" + esc(a.username || "") + "</td><td>" +
+            esc(a.status || "") + "</td><td>" + esc(String(pend)) + "</td></tr>";
         }
-        setView(h + "</table></div>" +
+        h += "</table></div>" +
           '<div class="card"><h3>Queue task</h3><div class="row">' +
           '<input id="ca" placeholder="agent id">' +
           '<input id="cc" placeholder="command">' +
           '<button class="button" onclick="c2t()">Queue</button>' +
-          '</div><pre id="co"></pre></div>');
+          '</div><pre id="co"></pre></div>';
+        setView(h);
       });
     },
 
@@ -1109,6 +1129,43 @@
             esc(py[j].fix || "") + "</td></tr>";
         }
         setView(h + "</table></div>");
+      });
+    },
+
+    settings: function () {
+      setTitle("Settings — API Keys");
+      return api("GET", "/api/v3/settings/keys").then(function (r) {
+        var d = r.d || {};
+        var h = '<div class="card"><h3>API Keys</h3>' +
+          "<p>Resolution order: environment variable &rarr; <code>" +
+          esc(d.file || "config/api_keys.yaml") +
+          "</code> (0600, gitignored) &rarr; ardf.yaml. Values are shown " +
+          "masked only &mdash; the server never sends them back in full." +
+          "</p>" +
+          '<table><tr><th>Key</th><th>Env var</th><th>Status</th>' +
+          "<th>Source</th><th>Value</th><th>Actions</th></tr>";
+        var keys = d.keys || [];
+        for (var i = 0; i < keys.length; i++) {
+          var k = keys[i];
+          h += "<tr><td>" + esc(k.name) + "</td><td><code>" +
+            esc(k.env_var) + "</code></td><td>" +
+            (k.configured ? '<b class="good">set</b>' :
+              '<b class="bad">unset</b>') + "</td><td>" +
+            esc(k.source) + "</td><td><code>" + esc(k.masked || "—") +
+            '</code></td><td>' +
+            '<input id="ak-' + esc(k.name) +
+            '" type="password" placeholder="new value" size="16"> ' +
+            '<button class="button" onclick="_saveKey(\'' + esc(k.name) +
+            '\')">Save</button> ' +
+            (k.source === "file" ?
+              '<button class="button" onclick="_delKey(\'' + esc(k.name) +
+              '\')">Del</button>' : "") +
+            "</td></tr>";
+        }
+        h += "</table><p>Saving writes to the keys file (mode 0600). " +
+          "Environment variables always take precedence over stored " +
+          "values. Recon modules pick these up automatically.</p></div>";
+        setView(h);
       });
     },
   };
@@ -1640,6 +1697,49 @@
       document.getElementById("co").textContent = JSON.stringify(r.d, null, 1);
     });
   }
+  function c2l(start) {
+    if (start) {
+      var host = (document.getElementById("ch") || {}).value || "127.0.0.1";
+      var port = parseInt((document.getElementById("cp") || {}).value || "4443", 10);
+      api("POST", "/api/v3/c2/listener/start", { host: host, port: port })
+        .then(function (r) {
+          var ok = r.d && r.d.running;
+          toast(ok ? "listener started on " + host + ":" + port +
+                " (token " + String(r.d.token || "").slice(0, 4) + "…)"
+                : "start failed: " + (r.d && r.d.error || "unknown"),
+                ok ? "ok" : "err");
+          go("c2");
+        });
+    } else {
+      api("POST", "/api/v3/c2/listener/stop", {}).then(function () {
+        toast("listener stopped", "ok");
+        go("c2");
+      });
+    }
+  }
+  function _saveKey(name) {
+    var el = document.getElementById("ak-" + name);
+    var v = el ? el.value : "";
+    if (!v) { toast("enter a value first", "warn"); return; }
+    api("POST", "/api/v3/settings/keys", { name: name, value: v })
+      .then(function (r) {
+        var ok = r.d && r.d.ok;
+        toast(ok ? "saved " + name + " (masked " +
+              (r.d.key && r.d.key.masked || "") + ")"
+              : "save failed: " + (r.d && r.d.error || "unknown"),
+              ok ? "ok" : "err");
+        go("settings");
+      });
+  }
+  function _delKey(name) {
+    api("DELETE", "/api/v3/settings/keys/" + name).then(function (r) {
+      var ok = r.d && r.d.ok;
+      toast(ok ? "removed " + name + " from keys file"
+            : "delete failed: " + (r.d && r.d.error || "unknown"),
+            ok ? "ok" : "err");
+      go("settings");
+    });
+  }
   function opswitch() {
     api("POST", "/api/v3/opsec",
         { profile: document.getElementById("op").value }).then(function (r) {
@@ -1793,6 +1893,9 @@
 
   // expose handlers used by inline onclick attributes
   window.go = go;
+  window.c2l = c2l;
+  window._saveKey = _saveKey;
+  window._delKey = _delKey;
   window.login = login;
   window.logout = logout;
   window.quick = quick;

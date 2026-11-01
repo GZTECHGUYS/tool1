@@ -584,6 +584,39 @@ class ARDFv3DashboardAPI:
             except Exception as e:
                 return jsonify({"error": str(e)}), 400
 
+        # ── Settings: API keys (masked values only; never plaintext) ──
+
+        @self.app.route("/api/v3/settings/keys", methods=["GET"])
+        @self.require_auth
+        def settings_keys():
+            from modules import apikeys
+            return jsonify({"keys": apikeys.status(),
+                            "file": str(apikeys.KEYS_FILE)})
+
+        @self.app.route("/api/v3/settings/keys", methods=["POST"])
+        @self.require_auth
+        def settings_key_set():
+            from modules import apikeys
+            data = request.get_json() or {}
+            name = str(data.get("name", ""))
+            try:
+                apikeys.set_key(name, str(data.get("value", "")))
+            except KeyError as e:
+                return jsonify({"error": str(e)}), 400
+            entry = next((k for k in apikeys.status()
+                          if k["name"] == name), None)
+            return jsonify({"ok": True, "key": entry}), 201
+
+        @self.app.route("/api/v3/settings/keys/<name>", methods=["DELETE"])
+        @self.require_auth
+        def settings_key_delete(name):
+            from modules import apikeys
+            try:
+                removed = apikeys.delete_key(name)
+            except KeyError as e:
+                return jsonify({"error": str(e)}), 400
+            return jsonify({"ok": True, "removed": removed})
+
         @self.app.route("/api/v3/preflight", methods=["GET"])
         @self.require_auth
         def preflight():

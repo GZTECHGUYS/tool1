@@ -70,3 +70,12 @@ __all__ = [
     "run_bypass", "run_workflow", "run_redteam",
     "run_exploit", "run_intel", "generate_report",
 ]
+
+# Bridge API keys (env / config/api_keys.yaml / ardf.yaml) into os.environ
+# so env-reading consumers (recon modules, intel services) see them. Never
+# fails the import chain.
+try:
+    from modules.apikeys import apply_to_environ as _apply_api_keys
+    _apply_api_keys()
+except Exception:
+    pass
