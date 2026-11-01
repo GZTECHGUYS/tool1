@@ -38,6 +38,43 @@ PY_DEPS = [
     ("dns", "dnspython", "DNS recon"),
 ]
 
+# pip/PyPI name -> Kali apt package (PEP 668: system deps come from apt)
+APT_PY_PACKAGES = {
+    "flask": "python3-flask",
+    "flask-cors": "python3-flask-cors",
+    "pyyaml": "python3-yaml",
+    "rich": "python3-rich",
+    "aiohttp": "python3-aiohttp",
+    "reportlab": "python3-reportlab",
+    "argon2-cffi": "python3-argon2",
+    "requests": "python3-requests",
+    "dnspython": "python3-dnspython",
+}
+
+
+def missing_apt_packages() -> List[str]:
+    """Apt package names for everything `check()` reports missing.
+
+    Single source of truth for setup.sh: tools and python deps both map to
+    their Kali apt packages here, so setup and preflight cannot drift.
+    """
+    pkgs: List[str] = []
+    for binary, apt, _purpose in TOOLS:
+        if shutil.which(binary) is None:
+            pkgs.append(apt)
+    for mod, pip_name, _purpose in PY_DEPS:
+        try:
+            importlib.import_module(mod)
+        except ImportError:
+            pkgs.append(APT_PY_PACKAGES.get(
+                pip_name, "python3-" + pip_name.replace("-", "-")))
+    seen, out = set(), []
+    for p in pkgs:
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
 
 def check() -> Dict[str, Any]:
     tools: List[Dict[str, Any]] = []

@@ -1,56 +1,128 @@
 #!/usr/bin/env bash
-# ARDF one-command setup — run once per machine.
-#   sudo ./setup.sh        (full: system tools + python deps into ./env)
-#   ./setup.sh --no-apt    (python deps only, no sudo needed)
+# ARDF setup — Kali tool provisioning, driven by modules/preflight.py
+# (single source of truth: setup and `ardf.py --preflight` cannot drift).
 #
-# Kali blocks system-wide pip (PEP 668), so Python deps always go into
-# the project virtualenv ./env (created if missing). Run ARDF with:
-#   ./env/bin/python ardf.py --preflight
-#   ./env/bin/python ardf_v3_main.py --dashboard
+# Usage:
+#   ./setup.sh                  install everything missing (apt + final gate)
+#   ./setup.sh --check          report only: exit 0 if ready, 1 if gaps
+#   ./setup.sh --no-apt         skip apt; gate only (plus venv if requested)
+#   ./setup.sh --venv           also create ./env virtualenv (optional)
+#   ./setup.sh --with-wordlists also install seclists/wordlists
+#
+# Kali blocks system-wide pip (PEP 668): Python deps come from apt
+# python3-* packages. System python (/usr/bin/python3) is the primary
+# runtime; ./env is optional.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APT_TOOLS="hydra gobuster dirb hashcat metasploit-framework bloodhound responder python3-impacket nmap sqlmap nikto masscan amass subfinder nuclei john python3-flask-cors python3-reportlab python3-cloudscraper python3-selenium python3-pytest python3-pytest-asyncio"
-PIP_REQS="requirements.txt"
-VENV_DIR="./env"
+PY="${PY:-/usr/bin/python3}"
+[[ -x "$PY" ]] || PY="$(command -v python3)"
 
-if [[ "${1:-}" != "--no-apt" ]]; then
-  echo "[*] Installing system tools (needs sudo)..."
-  sudo apt-get update
-  # shellcheck disable=SC2086
-  sudo apt-get install -y $APT_TOOLS
-else
-  echo "[*] Skipping apt ( --no-apt ). Tool gaps will be reported by preflight."
+APT=(apt-get)
+if [[ "$(id -u)" -ne 0 ]]; then
+  command -v sudo >/dev/null || { echo "need root or sudo for apt"; exit 1; }
+  APT=(sudo apt-get)
 fi
 
-if [[ ! -x "$VENV_DIR/bin/python" ]]; then
-  echo "[*] Creating project virtualenv at $VENV_DIR ..."
-  python3 -m venv "$VENV_DIR"
-fi
+DO_APT=1; DO_VENV=0; DO_WORDS=0; MODE=install
+for arg in "$@"; do
+  case "$arg" in
+    --check)          MODE=check ;;
+    --no-apt)         DO_APT=0 ;;
+    --venv)           DO_VENV=1 ;;
+    --with-wordlists) DO_WORDS=1 ;;
+    -h|--help)        grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown option: $arg (see --help)"; exit 2 ;;
+  esac
+done
 
-# Best-effort venv fill (PyPI may be slow/blocked — apt packages above
-# already cover every requirement, so a venv failure is non-fatal).
-echo "[*] Trying Python deps into $VENV_DIR (non-fatal if offline)..."
-set +e
-timeout 240 "$VENV_DIR/bin/python" -m pip install -r "$PIP_REQS" 2>&1 | tail -2
-set -e
+export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
 
-echo "[*] Verifying with SYSTEM python (primary runtime)..."
-/usr/bin/python3 - <<'PY'
-import shutil
-tools = ["nmap","sqlmap","hydra","gobuster","dirb","nikto","masscan","amass",
-         "subfinder","nuclei","john","hashcat","msfconsole","bloodhound",
-         "responder","secretsdump.py"]
-missing = [t for t in tools if shutil.which(t) is None]
-print("tools missing:", missing if missing else "none")
-import importlib
-for m in ["flask","flask_cors","yaml","rich","aiohttp","reportlab","argon2"]:
-    try:
-        importlib.import_module(m); print(f"py OK: {m}")
-    except ImportError:
-        print(f"py MISSING: {m}")
+# Print the full preflight table; exit code = readiness (0 ready / 1 gaps).
+run_check() {
+  "$PY" - <<'PY'
+import sys
+sys.path.insert(0, ".")
+from modules.preflight import check
+r = check()
+print("== tools ==")
+for t in r["tools"]:
+    mark = "ok  " if t["installed"] else "GAP "
+    line = f"  [{mark}] {t['tool']:<16} {t['purpose']}"
+    if not t["installed"]:
+        line += f"   -> {t['fix']}"
+    print(line)
+print("== python deps ==")
+for p in r["python"]:
+    mark = "ok  " if p["installed"] else "GAP "
+    line = f"  [{mark}] {p['package']:<16} {p['purpose']}"
+    if not p["installed"]:
+        line += f"   -> {p['fix']}"
+    print(line)
+cov = r.get("v2_coverage") or {}
+if cov.get("count"):
+    print(f"== v2 tool coverage: {cov.get('installed', 0)}/{cov['count']} ==")
+print()
+print("READY" if r["ready"] else f"NOT READY — {r['setup_hint']}")
+sys.exit(0 if r["ready"] else 1)
 PY
-echo "[*] Setup complete."
-echo "    Run ARDF with system python, e.g.:"
-echo "      /usr/bin/python3 ardf.py --preflight"
-echo "      /usr/bin/python3 ardf_v3_main.py --dashboard"
+}
+
+if [[ "$MODE" == "check" ]]; then
+  run_check
+  exit $?
+fi
+
+# ── install missing apt packages (derived from preflight, not hard-coded) ──
+if [[ "$DO_APT" -eq 1 ]]; then
+  echo "[*] Resolving missing packages from modules/preflight.py ..."
+  MISSING="$("$PY" -c 'import sys; sys.path.insert(0, "."); from modules.preflight import missing_apt_packages; print(" ".join(missing_apt_packages()))')"
+  if [[ -z "$MISSING" ]]; then
+    echo "[*] all preflight packages already present"
+  else
+    echo "[*] apt packages to install: $MISSING"
+    "${APT[@]}" update
+    # shellcheck disable=SC2086
+    DEBIAN_FRONTEND=noninteractive "${APT[@]}" install -y $MISSING
+  fi
+  if [[ "$DO_WORDS" -eq 1 ]]; then
+    echo "[*] installing wordlists (optional)..."
+    DEBIAN_FRONTEND=noninteractive "${APT[@]}" install -y seclists wordlists \
+      || echo "[!] wordlists package failed (optional, continuing)"
+  fi
+else
+  echo "[*] --no-apt: skipping package installation"
+fi
+
+# ── optional virtualenv (system python stays primary on Kali) ──
+if [[ "$DO_VENV" -eq 1 ]]; then
+  if [[ ! -x ./env/bin/python ]]; then
+    echo "[*] creating ./env virtualenv..."
+    if ! "$PY" -m venv ./env 2>/dev/null; then
+      if [[ "$DO_APT" -eq 1 ]]; then
+        DEBIAN_FRONTEND=noninteractive "${APT[@]}" install -y python3-venv
+        "$PY" -m venv ./env
+      else
+        echo "[!] cannot create venv (python3-venv missing; --no-apt set)"
+      fi
+    fi
+  fi
+  if [[ -x ./env/bin/python ]]; then
+    echo "[*] filling ./env from requirements.txt (best effort)..."
+    set +e
+    timeout 240 ./env/bin/python -m pip install -r requirements.txt >/dev/null 2>&1
+    set -e
+  fi
+fi
+
+# ── final gate: the same preflight that `ardf.py --preflight` runs ──
+echo
+echo "[*] preflight gate:"
+if run_check; then
+  echo "[*] setup complete — run ARDF with system python:"
+  echo "      $PY ardf.py --preflight"
+  echo "      $PY ardf_v3_main.py --dashboard"
+else
+  echo "[!] setup finished with gaps — see fixes above."
+  exit 1
+fi
