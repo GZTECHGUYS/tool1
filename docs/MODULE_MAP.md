@@ -9,7 +9,7 @@ but new code must use the **canonical** column.
 | OSINT mapping | `modules.osint_mapping` | `osint_mapping` (re-exports), `OSINT_INTEGRATION` (guide) |
 | Red-team orchestration | `modules.redteam` | `redteam` (flat, historical) |
 | Attack chains | `attack_chains` | — |
-| C2 | `ardf_v2_c2_infrastructure` (`C2Controller`) | `c2_infrastructure` (flat, historical) |
+| C2 | `ardf_v2_c2_infrastructure` (`C2Controller`, `BeaconListener`, `HTTPSBeacon`) + `ops.c2` (sync API, listener lifecycle) | `c2_infrastructure` (deleted in WS-1) |
 | Payload delivery | `ardf_v2_payload_delivery` + `modules.payloads` (profiles) | — |
 | v2 hub (every ardf_v2_* wired) | `ops/v2.py` → `/api/v3/v2/*`, preflight `v2_coverage`, recon CT | — |
 | Evasion | `ardf_v2_evasion_complete` + `modules.opsec_profiles` | `detection_evasion` (flat, historical) |
@@ -24,6 +24,9 @@ but new code must use the **canonical** column.
 | Loot / exfil | `modules.loot`, `modules.exfil_ledger` | — |
 | PDF / remediation | `modules.pdf_report` | — |
 | Intel enrich | `modules.intel_enrich` | — |
+| Attack modules (tier-gated) | `modules.attacks` (`p1_pack`–`p4_pack`, `base.require_in_scope`) | flat attack files (deleted in WS-1) |
+| API keys (Settings) | `modules.apikeys` (env → `config/api_keys.yaml` 0600 → ardf.yaml) | `ardf.yaml api_keys` placeholders (still honoured) |
+| Setup / provisioning | `setup.sh` driven by `modules.preflight.missing_apt_packages()` | — |
 
 ## Rules for new code
 1. New modules live under `modules/`, `ops/`, `core/`, `ai/`, `graph/`, `daemon/` or `playbook/`.

@@ -40,6 +40,11 @@ try:
     _register(_P3)
 except Exception:
     pass
+try:
+    from .p4_pack import PACK4 as _P4
+    _register(_P4)
+except Exception:
+    pass
 
 
 def list_attacks() -> List[Dict[str, Any]]:
