@@ -26,11 +26,11 @@ ardf/
 │   ├── playbooks/             Mission playbooks (YAML)
 │   └── wordlists.yaml         Wordlist path registry
 │
-├── ardf/                      Assessment package
-│   └── offensive/
-│       ├── base.py            Scope gate and engagement storage
-│       ├── runner.py          Module dispatch
-│       └── modules/           22 modules grouped by domain
+├── modules/attacks/          Offensive attack registry (P1/P2/P3 packs)
+│   ├── base.py               AttackModule base + scope gate
+│   ├── p1_pack.py            Phase-1 bounded checks
+│   ├── p2_pack.py            Phase-2 active probes
+│   └── p3_pack.py            Posture & validation pack
 │
 ├── ai/                        Local AI layer (Ollama)
 │   ├── local_model.py         Ollama interface
@@ -88,20 +88,20 @@ ardf/
     └── test_decision_engine.py
 ```
 
-### Offensive assessment modules
+### Offensive attack modules
 
-The 22 assessment modules live under `ardf/offensive/modules/`, grouped by
-domain. Run one by id:
+The attack registry lives in `modules/attacks/` (P1 + P2 + P3 packs,
+tier-gated). List and run them via the CLI:
 
 ```bash
-python -m ardf.offensive.run_module adcs_abuse_suite \
-  --target 10.0.0.5 \
-  --engagement ENG-2026-001 \
-  --authorized-by alice \
-  --facts-json '{"templates": [...]}'
+python ardf.py --list-attacks
+python ardf.py --target 10.0.0.5 --attack adcs_abuse_suite --attack-mode plan
+python ardf.py --target 10.0.0.5 --attack exposed_services \
+  --attack-mode exec --confirm-text APPROVE    # Tier-2 gate
 ```
 
-Root `offensive_base.py` and `offensive_runner.py` are compatibility shims.
+Root `offensive_base.py` and `offensive_runner.py` are compatibility shims
+re-exporting `modules.attacks`.
 
 ---
 

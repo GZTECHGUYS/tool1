@@ -14,7 +14,7 @@ import json
 import time
 import signal
 import threading
-from datetime  import datetime
+from datetime import datetime, timezone
 from pathlib   import Path
 from typing    import Dict, List, Optional, Callable
 
@@ -110,7 +110,7 @@ class MonitorDaemon:
 
             self.logger.info(
                 f"Monitor cycle {self._cycle_count} | "
-                f"{datetime.utcnow().strftime('%H:%M:%S UTC')}"
+                f"{datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
             )
 
             try:
@@ -175,7 +175,7 @@ class MonitorDaemon:
         monitor = SecurityMonitor(session=self.session, logger=self.logger)
         monitor.set_baseline()
         self._baseline = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "captured":  True,
         }
         self.logger.success("Monitoring baseline captured")
@@ -209,7 +209,7 @@ class MonitorDaemon:
         try:
             state = {
                 "cycle_count":  self._cycle_count,
-                "last_run":     datetime.utcnow().isoformat(),
+                "last_run":     datetime.now(timezone.utc).isoformat(),
                 "running":      self._running,
                 "alerts_sent":  self.alerter.alert_count,
             }

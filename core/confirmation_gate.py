@@ -14,7 +14,7 @@ explicitly configured and logged with a warning.
 
 import time
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib  import Path
 from typing   import Dict, List, Optional
 
@@ -280,7 +280,7 @@ class ConfirmationGate:
     ):
         """Record gate decision in audit log."""
         entry = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "task_id":   task_id,
             "task_name": task_name,
             "target":    target,

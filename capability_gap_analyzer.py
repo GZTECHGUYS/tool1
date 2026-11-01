@@ -27,6 +27,9 @@ class MITRETactic(Enum):
     COMMAND_AND_CONTROL = "command_and_control"
     EXFILTRATION = "exfiltration"
     IMPACT = "impact"
+    # ARDF extension — exploitation phase (mapped from Initial Access/Execution
+    # when a chain reaches active exploitation).
+    EXPLOITATION = "exploitation"
 
 
 @dataclass

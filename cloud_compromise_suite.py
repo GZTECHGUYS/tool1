@@ -12,7 +12,7 @@ import requests
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional, Tuple
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timezone
 import base64
 import re
 
@@ -422,7 +422,7 @@ class FederatedIdentityExploit:
         import uuid
         
         assertion_id = f"_{uuid.uuid4()}"
-        issued_at = datetime.utcnow()
+        issued_at = datetime.now(timezone.utc)
         not_on_or_after = issued_at + timedelta(minutes=5)
         
         saml_response = f"""

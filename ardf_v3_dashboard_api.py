@@ -557,6 +557,33 @@ class ARDFv3DashboardAPI:
             except Exception as e:
                 return jsonify({"error": str(e)}), 400
 
+        @self.app.route("/api/v3/c2/listener/status", methods=["GET"])
+        @self.require_auth
+        def c2_listener_status():
+            from ops import c2 as _c2
+            return jsonify(_c2.listener_status())
+
+        @self.app.route("/api/v3/c2/listener/start", methods=["POST"])
+        @self.require_auth
+        def c2_listener_start():
+            from ops import c2 as _c2
+            data = request.get_json() or {}
+            try:
+                return jsonify(_c2.listener_start(
+                    data.get("host", "127.0.0.1"),
+                    int(data.get("port", 4443)))), 201
+            except Exception as e:
+                return jsonify({"error": str(e)}), 400
+
+        @self.app.route("/api/v3/c2/listener/stop", methods=["POST"])
+        @self.require_auth
+        def c2_listener_stop():
+            from ops import c2 as _c2
+            try:
+                return jsonify(_c2.listener_stop())
+            except Exception as e:
+                return jsonify({"error": str(e)}), 400
+
         @self.app.route("/api/v3/preflight", methods=["GET"])
         @self.require_auth
         def preflight():

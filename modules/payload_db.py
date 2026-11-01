@@ -17,7 +17,7 @@ import random
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-BUNDLED_ROOT = Path(__file__).parent.parent / "paylads" / "cc" / "payloads"
+BUNDLED_ROOT = Path(__file__).parent.parent / "payloads" / "cc" / "payloads"
 
 
 def _extra_roots() -> List[Path]:

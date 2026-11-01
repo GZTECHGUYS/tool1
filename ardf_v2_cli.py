@@ -30,258 +30,186 @@ class ARDFCLIv2:
     def __init__(self, config_file: Optional[str] = None):
         """Initialize CLI"""
         self.config_file = config_file or '/tmp/ardf_config/ardf.yaml'
+        self.session = None
         self.session_id = None
         self.c2 = None
         
         logger.info("[+] ARDF v2 CLI Initialized")
     
     async def engagement(self, args):
-        """Start engagement"""
-        logger.info(f"╔════════════════════════════════════════════════════════╗")
-        logger.info(f"║  ARDF v2 ENGAGEMENT START                              ║")
-        logger.info(f"║  Target: {args.target:<46} ║")
-        logger.info(f"╚════════════════════════════════════════════════════════╝")
-        
+        """Run a REAL engagement through the ARDF pipeline.
+
+        Everything here goes through the normal ARDF path: scope guard,
+        mission playbooks / orchestrator phases, and the Tier-1/2/3
+        confirmation gates. Nothing is simulated.
+        """
+        from modules.session import Session, SessionMode
+        from core.mission import run_mission
+
+        session = Session(args.target, SessionMode.RED)
+        self.session = session
+        self.session_id = session.meta.session_id
+        logger.info(f"session: {self.session_id}  target: {args.target}")
+
         if args.full:
-            logger.info("[*] Running FULL red team engagement (all 247+ features)")
-            logger.info("[*] Duration: ~5-7 days")
-            logger.info("[*] Phases: Recon → Scanning → Exploitation → Persistence → Lateral → Exfil → Reporting")
-            
-            # Simulate engagement
-            await self._simulate_engagement(args.target)
-        
+            logger.info("[*] FULL workflow: run_orchestrator (gated phases)")
+            from core.orchestrator import run_orchestrator
+            result = await asyncio.to_thread(
+                run_orchestrator, session, logger, {"depth": "normal"})
         elif args.web_only:
-            logger.info("[*] Running WEB ASSESSMENT (25+ frameworks)")
-            await self._web_assessment(args.target)
-        
+            logger.info("[*] Web assessment playbook (web_audit)")
+            result = await asyncio.to_thread(
+                run_mission, session, "web_audit", logger)
         elif args.cloud_only:
-            logger.info("[*] Running CLOUD ASSESSMENT (13 frameworks)")
-            await self._cloud_assessment(args.target)
-        
+            logger.info("[*] Cloud assessment: passive_osint playbook "
+                        "(cloud/asset OSINT — no cloud playbook registered)")
+            result = await asyncio.to_thread(
+                run_mission, session, "passive_osint", logger)
         else:
-            logger.info("[*] Running reconnaissance only")
-            await self._reconnaissance(args.target)
+            logger.info("[*] Reconnaissance: passive_osint playbook")
+            result = await asyncio.to_thread(
+                run_mission, session, "passive_osint", logger)
+
+        logger.info(f"engagement finished: {result}")
+        return result
     
-    async def _simulate_engagement(self, target: str):
-        """Simulate full engagement"""
-        stages = [
-            ("Reconnaissance", 8),
-            ("Scanning & Enumeration", 12),
-            ("Exploitation", 6),
-            ("Persistence", 2),
-            ("Lateral Movement", 8),
-            ("Data Collection", 6),
-            ("Evasion & Anti-Forensics", 2),
-            ("Reporting", 8)
-        ]
-        
-        for stage, hours in stages:
-            logger.info(f"\n{'='*60}")
-            logger.info(f"STAGE: {stage} ({hours}h)")
-            logger.info(f"{'='*60}")
-            
-            if "Reconnaissance" in stage:
-                logger.info("[+] Subdomains enumerated: 50 hosts")
-                logger.info("[+] Email addresses harvested: 150")
-                logger.info("[+] Technology stack detected: Apache 2.4.6")
-            
-            elif "Scanning" in stage:
-                logger.info("[+] Open ports found: 25")
-                logger.info("[+] Vulnerable services: 5")
-                logger.info("[+] Vulnerabilities identified: 18")
-            
-            elif "Exploitation" in stage:
-                logger.info("[+] SQL Injection found in /login")
-                logger.info("[+] Web shell deployed: shell.php")
-                logger.info("[+] Reverse shell established to C2")
-            
-            elif "Persistence" in stage:
-                logger.info("[+] Scheduled task created: WindowsUpdater")
-                logger.info("[+] Registry Run key created")
-                logger.info("[+] DLL injection into explorer.exe")
-            
-            elif "Lateral" in stage:
-                logger.info("[+] Credentials dumped from LSASS")
-                logger.info("[+] Kerberoasting successful: MSSQLSvc")
-                logger.info("[+] Service account password cracked: ServicePassword123!")
-            
-            elif "Data" in stage:
-                logger.info("[+] Database enumerated: CUSTOMERS table")
-                logger.info("[+] 50,000 records extracted")
-                logger.info("[+] Exfiltration complete via DNS tunnel")
-            
-            elif "Evasion" in stage:
-                logger.info("[+] Event logs deleted")
-                logger.info("[+] Artifacts cleaned")
-                logger.info("[+] Timestamps manipulated")
-            
-            elif "Reporting" in stage:
-                logger.info("[+] Evidence collected: 110 items")
-                logger.info("[+] Executive summary generated")
-                logger.info("[+] Technical report generated")
-                logger.info("[+] Compliance analysis complete")
-        
-        logger.info(f"\n{'='*60}")
-        logger.info("ENGAGEMENT COMPLETE")
-        logger.info(f"{'='*60}")
-        logger.info("[+] Status: SUCCESS")
-        logger.info("[+] Systems Compromised: 15+")
-        logger.info("[+] Data Exposed: 50,000+ records")
-        logger.info("[+] Persistence: 5 mechanisms")
-        logger.info("[+] C2 Agents: 3 active")
-        logger.info("[+] Evidence: 110 items collected")
-        logger.info("[+] Reports: 5 generated")
-    
-    async def _web_assessment(self, target: str):
-        """Web-only assessment"""
-        logger.info(f"[*] Assessing {target} for web vulnerabilities")
-        
-        frameworks = [
-            "SQL Injection", "XSS", "SSTI", "XXE", "SSRF",
-            "JWT", "OAuth", "GraphQL", "CORS", "HTTP Smuggling"
-        ]
-        
-        for fw in frameworks[:5]:
-            logger.info(f"  [+] Testing {fw}...")
-        
-        logger.info("[+] Web assessment complete: 5 vulnerabilities found")
-    
-    async def _cloud_assessment(self, target: str):
-        """Cloud-only assessment"""
-        logger.info(f"[*] Assessing cloud resources for {target}")
-        logger.info("[+] S3 bucket enumeration...")
-        logger.info("[+] Found: company-data-bucket (accessible)")
-        logger.info("[+] IAM privilege escalation potential detected")
-    
-    async def _reconnaissance(self, target: str):
-        """Reconnaissance only"""
-        logger.info(f"[*] Running reconnaissance on {target}")
-        logger.info("[+] Subdomains: 50 found")
-        logger.info("[+] Emails: 150 harvested")
-        logger.info("[+] Technology stack identified")
-    
+    def _c2(self):
+        """Shared controller instance with the dashboard (ops.c2 global)."""
+        from ops import c2 as c2ops
+        return c2ops.get_controller(), c2ops
+
     async def c2_status(self, args):
-        """Display C2 status"""
+        """Display REAL C2 status from the shared controller state."""
+        ctl, c2ops = self._c2()
+        overview = c2ops.overview()
+        listener = getattr(ctl, "listener", None)
+        running = bool(listener and listener.running)
+        where = (f"{listener.listen_host}:{listener.listen_port}"
+                 if running else "stopped")
         logger.info(f"\n{'='*60}")
-        logger.info("C2 INFRASTRUCTURE STATUS")
+        logger.info("C2 INFRASTRUCTURE STATUS (live)")
         logger.info(f"{'='*60}")
-        logger.info(f"Primary Server:   c2.attacker.com:443")
-        logger.info(f"Backup 1:         dns://exfil.attacker.com")
-        logger.info(f"Backup 2:         icmp://attacker.com")
-        
-        logger.info(f"\nBeacon Status:")
-        logger.info(f"  HTTPS:           Active (3 agents)")
-        logger.info(f"  DNS:             Standby")
-        logger.info(f"  ICMP:            Standby")
-        logger.info(f"  WebSocket:       Active (1 agent)")
-        logger.info(f"  P2P:             Standby")
-        
-        logger.info(f"\nAgent Summary:")
-        logger.info(f"  Total Agents:    4")
-        logger.info(f"  Active:          4")
-        logger.info(f"  Inactive:        0")
-        logger.info(f"  Dead:            0")
-        
-        logger.info(f"\nPending Commands:")
-        logger.info(f"  Total:           12")
-        logger.info(f"  Queued:          5")
-        logger.info(f"  Sent:            4")
-        logger.info(f"  Executed:        3")
-    
+        logger.info(f"Listener:  {where}")
+        logger.info(f"Token:     {ctl.token[:4]}... (set ARDF_C2_TOKEN to pin)")
+        beacons = ", ".join(str(b) for b in overview.get("beacons", []))
+        logger.info(f"Beacons:   {beacons}")
+        logger.info("           (TCP channel implemented; dns/icmp/"
+                    "websocket/p2p: not implemented)")
+        fo = overview.get("failover")
+        logger.info(f"Failover:  {json.dumps(fo) if fo else 'not configured'}")
+        agents = overview.get("agents", [])
+        queued = sum(1 for c in ctl.commands.values()
+                     if c.status in ("queued", "sent"))
+        done = sum(1 for c in ctl.commands.values() if c.status == "executed")
+        logger.info(f"Agents:    {len(agents)} registered")
+        logger.info(f"Commands:  {queued} queued | {done} executed | "
+                    f"{len(ctl.commands)} total")
+        if not running:
+            logger.info("Start it:  dashboard C2 tab -> Start listener, or "
+                        "POST /api/v3/c2/listener/start")
+
     async def agent_list(self, args):
-        """List all agents"""
+        """List REAL registered agents."""
+        ctl, c2ops = self._c2()
+        agents = c2ops.agents()
+        if not agents:
+            logger.info("No agents registered (listener not reached yet).")
+            return
         logger.info(f"\n{'='*60}")
-        logger.info("AGENT LIST")
+        logger.info(f"AGENT LIST ({len(agents)})")
         logger.info(f"{'='*60}")
-        
-        agents = [
-            {
-                'id': 'a1b2c3d4e5f6',
-                'hostname': 'WORKSTATION1',
-                'user': 'admin',
-                'os': 'Windows',
-                'status': 'active',
-                'beacon': 'HTTPS',
-                'last_seen': '2 minutes ago'
-            },
-            {
-                'id': 'f6e5d4c3b2a1',
-                'hostname': 'WORKSTATION2',
-                'user': 'user',
-                'os': 'Windows',
-                'status': 'active',
-                'beacon': 'WebSocket',
-                'last_seen': '1 minute ago'
-            },
-            {
-                'id': 'abc123def456',
-                'hostname': 'SERVER1',
-                'user': 'system',
-                'os': 'Linux',
-                'status': 'active',
-                'beacon': 'DNS',
-                'last_seen': '5 minutes ago'
-            },
-            {
-                'id': 'xyz789uvw123',
-                'hostname': 'DC1',
-                'user': 'SYSTEM',
-                'os': 'Windows',
-                'status': 'active',
-                'beacon': 'HTTPS',
-                'last_seen': '30 seconds ago'
-            }
-        ]
-        
-        logger.info(f"{'ID':<13} {'Hostname':<15} {'User':<10} {'OS':<10} {'Status':<10} {'Beacon':<10} {'Last Seen':<15}")
-        logger.info("─" * 83)
-        
-        for agent in agents:
-            logger.info(f"{agent['id']:<13} {agent['hostname']:<15} {agent['user']:<10} {agent['os']:<10} {agent['status']:<10} {agent['beacon']:<10} {agent['last_seen']:<15}")
-    
+        hdr = (f"{'ID':<14}{'HOSTNAME':<18}{'USER':<12}{'OS':<10}"
+               f"{'STATUS':<10}{'PENDING':<9}{'LAST SEEN'}")
+        logger.info(hdr)
+        logger.info("-" * len(hdr))
+        for a in agents:
+            aid = a.get("agent_id") or a.get("id", "?")
+            logger.info(
+                f"{str(aid):<14}{str(a.get('hostname', '?')):<18}"
+                f"{str(a.get('username', '?')):<12}"
+                f"{str(a.get('os', '?')):<10}"
+                f"{str(a.get('status', '?')):<10}"
+                f"{str(a.get('pending_commands', 0)):<9}"
+                f"{a.get('last_seen', '?')}")
+
+    async def _wait_result(self, ctl, command_id: str,
+                           timeout: int = 30):
+        """Poll the shared controller for a command result."""
+        for _ in range(timeout):
+            cmd = ctl.commands.get(command_id)
+            if cmd and cmd.status == "executed":
+                return cmd.result
+            await asyncio.sleep(1)
+        return None
+
     async def execute_command(self, args):
-        """Execute command on agent"""
-        logger.info(f"[*] Executing on agent {args.agent_id}")
-        logger.info(f"[*] Command: {args.command}")
-        logger.info(f"[+] Command queued: cmd_7f8e9d0a")
-        logger.info(f"[*] Waiting for result...")
-        logger.info(f"[+] Result received:")
-        logger.info(f"    CORP\\admin")
-    
+        """Queue a REAL shell command on an agent and wait for its output."""
+        ctl, _ = self._c2()
+        if args.agent_id not in getattr(ctl, "agents", {}):
+            logger.error(f"unknown agent {args.agent_id!r} "
+                         "(see: ardf.py --v2 ... agents --list)")
+            return
+        from ardf_v2_c2_infrastructure import C2CommandType
+        logger.info(f"[*] queue on {args.agent_id}: {args.command}")
+        cid = await ctl.queue_command(args.agent_id, C2CommandType.SHELL,
+                                      args.command)
+        logger.info(f"[*] command_id={cid}; waiting for agent poll "
+                    "(agent sleeps ~10s between polls)...")
+        result = await self._wait_result(ctl, cid)
+        if result is None:
+            logger.info("[*] no result within timeout — command stays queued; "
+                        "check the C2 tab later")
+        else:
+            logger.info("[+] result:")
+            print(result)
+
     async def download_file(self, args):
-        """Download file from agent"""
-        logger.info(f"[*] Downloading {args.remote_path} from {args.agent_id}")
-        logger.info(f"[+] File size: 2.5MB")
-        logger.info(f"[+] Downloaded to: {args.output or '/tmp/downloaded_file'}")
-    
+        """Fetch a file from the agent (real queue + wait + write)."""
+        ctl, _ = self._c2()
+        if args.agent_id not in getattr(ctl, "agents", {}):
+            logger.error(f"unknown agent {args.agent_id!r}")
+            return
+        from ardf_v2_c2_infrastructure import C2CommandType
+        cid = await ctl.queue_command(args.agent_id, C2CommandType.DOWNLOAD,
+                                      args.remote_path)
+        logger.info(f"[*] queued download of {args.remote_path} ({cid})...")
+        result = await self._wait_result(ctl, cid, timeout=60)
+        if result is None or result.startswith("error:"):
+            logger.error(f"download failed: {result or 'timeout'}")
+            return
+        dest = args.output or Path(args.remote_path).name
+        Path(dest).write_text(result)
+        logger.info(f"[+] wrote {len(result)} bytes -> {dest}")
+
     async def upload_file(self, args):
-        """Upload file to agent"""
-        logger.info(f"[*] Uploading {args.local_path} to {args.agent_id}")
-        logger.info(f"[+] File size: 1.2MB")
-        logger.info(f"[+] Uploaded to: {args.remote_path}")
-    
+        """Push a local file to the agent (real queue + wait)."""
+        ctl, _ = self._c2()
+        if args.agent_id not in getattr(ctl, "agents", {}):
+            logger.error(f"unknown agent {args.agent_id!r}")
+            return
+        import base64 as _b64
+        from ardf_v2_c2_infrastructure import C2CommandType
+        data = Path(args.local_path).read_bytes()
+        cid = await ctl.queue_command(
+            args.agent_id, C2CommandType.UPLOAD, args.remote_path,
+            {"content_b64": _b64.b64encode(data).decode()})
+        logger.info(f"[*] queued upload of {len(data)} bytes -> "
+                    f"{args.remote_path} ({cid})...")
+        result = await self._wait_result(ctl, cid, timeout=60)
+        if result is None or result.startswith("error:"):
+            logger.error(f"upload failed: {result or 'timeout'}")
+        else:
+            logger.info(f"[+] {result}")
+
     async def report(self, args):
-        """Generate report"""
-        logger.info(f"\n{'='*60}")
-        logger.info("GENERATING REPORT")
-        logger.info(f"{'='*60}")
-        logger.info("[*] Collecting evidence...")
-        logger.info("[+] Evidence collected: 110 items")
-        logger.info("[*] Generating executive summary...")
-        logger.info("[+] Executive summary: 15KB")
-        logger.info("[*] Generating technical report...")
-        logger.info("[+] Technical report: 45KB")
-        logger.info("[*] Generating compliance analysis...")
-        logger.info("[+] Compliance violations: 5 identified")
-        logger.info("[*] Generating remediation roadmap...")
-        logger.info("[+] Remediation actions: 50 items")
-        logger.info(f"\n[+] Reports saved to /tmp/ardf_reports/")
-        logger.info("  - executive_summary.html (15KB)")
-        logger.info("  - technical_report.html (45KB)")
-        logger.info("  - compliance_analysis.html (25KB)")
-        logger.info("  - remediation_roadmap.html (35KB)")
-        logger.info("  - evidence_package.json (2MB)")
-    
+        """Generate a REAL report from the active engagement session."""
+        if self.session is None:
+            logger.error("no active session — run 'engagement' first")
+            return
+        from modules.report import generate_report
+        logger.info("[*] generating report from live session data...")
+        await asyncio.to_thread(generate_report, self.session, logger, False)
+
     async def run(self):
         """Run CLI"""
         parser = argparse.ArgumentParser(

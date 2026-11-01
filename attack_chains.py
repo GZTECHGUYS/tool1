@@ -515,11 +515,12 @@ class AttackChainModule(RedTeamModule):
         self.chains: Dict[str, AttackChain] = {}
     
     def execute(self) -> Dict[str, Any]:
-        """Execute available attack chains."""
+        """Execute available attack chains.
+
+        Only chains actually built by the caller (via ``build_and_execute_chain``
+        or explicit ``add_step``) are reported — nothing is fabricated here.
+        """
         self.log_info("Analyzing findings for viable attack chains")
-        
-        # This would be called with specific findings from recon
-        # For now, demonstrate with dummy chains
         
         return {
             "success": True,

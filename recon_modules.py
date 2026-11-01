@@ -24,6 +24,7 @@ class PassiveReconModule(OffensiveModule):
     async def execute(self, context: ExecutionContext) -> List[Finding]:
         """Execute passive reconnaissance."""
         findings = []
+        self._ctx_session_id = context.session_id
         
         # WHOIS lookup
         whois = await self._whois_lookup(context.target)
@@ -62,35 +63,39 @@ class PassiveReconModule(OffensiveModule):
         return findings
     
     async def _whois_lookup(self, domain: str) -> dict:
-        """Simulate WHOIS lookup."""
-        await asyncio.sleep(0.1)
-        return {
-            "registrar": "GoDaddy",
-            "registered": "2018-03-15",
-            "updated": "2023-01-20",
-            "registrant_country": "US",
-        }
-    
+        """Real WHOIS lookup (modules.recon.domain.DomainRecon)."""
+        from modules.recon.domain import DomainRecon
+
+        loop = asyncio.get_running_loop()
+        recon = DomainRecon(self._session(domain))
+        return await loop.run_in_executor(None, recon.whois_lookup, domain)
+
     async def _dns_lookup(self, domain: str) -> dict:
-        """Simulate DNS lookup."""
-        await asyncio.sleep(0.1)
-        return {
-            "A": ["192.168.1.100"],
-            "MX": ["mail.example.com"],
-            "NS": ["ns1.example.com", "ns2.example.com"],
-            "TXT": ["v=spf1 include:_spf.google.com ~all"],
-        }
-    
+        """Real DNS record enumeration (dnspython via DomainRecon)."""
+        from modules.recon.domain import DomainRecon
+
+        loop = asyncio.get_running_loop()
+        recon = DomainRecon(self._session(domain))
+        return await loop.run_in_executor(None, recon.dns_records, domain)
+
     async def _ssl_cert_info(self, domain: str) -> dict:
-        """Simulate SSL certificate retrieval."""
-        await asyncio.sleep(0.1)
-        return {
-            "issuer": "Let's Encrypt",
-            "subject": f"CN={domain}",
-            "valid_from": "2023-01-01",
-            "valid_to": "2024-01-01",
-            "san": [f"www.{domain}", f"api.{domain}"],
-        }
+        """Real TLS certificate retrieval (modules.recon.web.WebRecon).
+
+        Contacts the target, so it is scope-gated first.
+        """
+        from modules.attacks.base import require_in_scope
+        from modules.recon.web import WebRecon
+
+        require_in_scope(domain)
+        loop = asyncio.get_running_loop()
+        recon = WebRecon(self._session(domain))
+        return await loop.run_in_executor(None, recon.ssl_certificate, domain)
+
+    def _session(self, target: str):
+        """Real ARDF session for artifact storage (identity from context)."""
+        from modules.session import Session
+
+        return Session(target, session_id=self._ctx_session_id)
 
 
 class ActiveScanModule(OffensiveModule):
@@ -106,8 +111,12 @@ class ActiveScanModule(OffensiveModule):
     timeout_seconds = 300
     
     async def execute(self, context: ExecutionContext) -> List[Finding]:
-        """Execute active scanning."""
+        """Execute active scanning (scope-gated: contacts the target)."""
+        from modules.attacks.base import require_in_scope
+
+        require_in_scope(context.target)
         findings = []
+        self._ctx_session_id = context.session_id
         
         # Port scan
         ports = await self._port_scan(context.target)
@@ -128,11 +137,22 @@ class ActiveScanModule(OffensiveModule):
         
         return findings
     
+    # Bounded default port set — real TCP connect scan + banner fingerprint.
+    DEFAULT_PORTS = [
+        21, 22, 23, 25, 53, 80, 110, 111, 135, 139, 143, 443, 445,
+        993, 995, 1433, 1521, 3306, 3389, 5432, 5900, 6379, 8000,
+        8080, 8443, 8888, 9090, 9200, 11211, 27017,
+    ]
+
     async def _port_scan(self, target: str) -> List[tuple]:
-        """Simulate port scanning."""
-        await asyncio.sleep(0.2)
+        """Real port scan via modules.recon.port_fingerprint.scan_ports."""
+        from modules.recon.port_fingerprint import scan_ports
+
+        loop = asyncio.get_running_loop()
+        results = await loop.run_in_executor(
+            None, scan_ports, target, self.DEFAULT_PORTS
+        )
         return [
-            (22, "ssh", "OpenSSH 7.4"),
-            (80, "http", "Apache 2.4.6"),
-            (443, "https", "nginx 1.16"),
+            (p["port"], p.get("service") or "unknown", p.get("version") or "")
+            for p in results.get("ports", [])
         ]

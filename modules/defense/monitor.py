@@ -15,7 +15,7 @@ import re
 import json
 import time
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib  import Path
 from typing   import Any, Dict, List, Optional
 
@@ -39,7 +39,7 @@ class MonitorResult:
         self.observations = observations
         self.anomalies    = anomalies
         self.raw_data     = raw_data
-        self.timestamp    = datetime.utcnow().isoformat()
+        self.timestamp    = datetime.now(timezone.utc).isoformat()
 
     def to_dict(self) -> Dict:
         return {
@@ -118,7 +118,7 @@ class SecurityMonitor:
         self._baselines["ports"]     = self._get_open_ports()
         self._baselines["processes"] = self._get_processes()
         self._baselines["conns"]     = self._get_connections()
-        self._baselines["timestamp"] = datetime.utcnow().isoformat()
+        self._baselines["timestamp"] = datetime.now(timezone.utc).isoformat()
         self.logger.success("Baseline captured")
 
     def get_delta(self) -> Dict[str, List]:

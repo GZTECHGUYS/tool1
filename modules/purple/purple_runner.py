@@ -19,7 +19,7 @@ Design
 
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib  import Path
 from typing   import Any, Callable, Dict, List, Optional
 
@@ -51,7 +51,7 @@ class PhaseResult:
         self.sigma_rules   = sigma_rules
         self.coverage_pct  = coverage_pct
         self.duration_secs = duration_secs
-        self.timestamp     = datetime.utcnow().isoformat()
+        self.timestamp     = datetime.now(timezone.utc).isoformat()
 
     def to_dict(self) -> Dict:
         return {
@@ -377,7 +377,7 @@ class PurpleRunner:
                 "session_id":       self.session.meta.session_id,
                 "phases_run":       len(self._phase_results),
                 "total_duration_s": round(duration, 2),
-                "generated_at":     datetime.utcnow().isoformat(),
+                "generated_at":     datetime.now(timezone.utc).isoformat(),
             },
             "red_team": {
                 "total_findings":  total_red,

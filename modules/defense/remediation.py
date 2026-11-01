@@ -13,7 +13,7 @@ Outputs
 """
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib  import Path
 from typing   import Dict, List, Optional
 
@@ -325,7 +325,7 @@ class RemediationBuilder:
         plan      = {
             "session_id":   self.session.meta.session_id,
             "target":       self.session.meta.target,
-            "generated_at": datetime.utcnow().isoformat(),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
             "total_items":  len(items),
             "items":        items,
         }
@@ -405,7 +405,7 @@ class RemediationBuilder:
         return "default"
 
     def _render_markdown(self, items: List[Dict], findings: List[Finding]) -> str:
-        ts      = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+        ts      = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         summary = self.session.findings_summary()
 
         lines = [

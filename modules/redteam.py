@@ -190,11 +190,15 @@ class RedTeamEngine:
 
 def vector_cloudflare_bypass(target: str, **kwargs) -> Dict:
     """Vector: Bypass Cloudflare."""
+    from modules.attacks.base import require_in_scope
     from modules.bypass import run_bypass
-    # Create dummy session for bypass
+    require_in_scope(target)  # active vector: HTTP traffic to the target
+    # Reuse the caller's engagement session when one is supplied so
+    # artifacts land in the right session directory; otherwise create a
+    # real RED session for this engagement.
     from modules.session import Session, SessionMode
-    dummy_session = Session(target, SessionMode.RED)
-    result = run_bypass(target, dummy_session)
+    session = kwargs.get("session") or Session(target, SessionMode.RED)
+    result = run_bypass(target, session)
     return {"success": result.get("bypass_achieved", False), "data": result}
 
 

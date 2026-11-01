@@ -4,7 +4,7 @@ interface/banner.py
 ASCII banner and startup display for ARDF.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing   import Dict, Optional
 
 from rich.console import Console
@@ -48,7 +48,7 @@ def print_banner(mode: str = "red"):
     info_table.add_row("Version",  f"v{VERSION} — {CODENAME}")
     info_table.add_row("Mode",     mode.upper())
     info_table.add_row("Engine",   "Qwen2.5 / tinyllama (local)")
-    info_table.add_row("Started",  datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"))
+    info_table.add_row("Started",  datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"))
 
     console.print(
         Panel(

@@ -31,8 +31,8 @@ from core.confirmation_gate   import ConfirmationGate, GateDecision
 def _make_session(tmp_path):
     """Create a minimal test session."""
     from modules.session import SessionMeta, Session, SessionStatus, Mode
-    from datetime import datetime
-    now  = datetime.utcnow().isoformat()
+    from datetime import datetime, timezone
+    now  = datetime.now(timezone.utc).isoformat()
     meta = SessionMeta(
         session_id   = "test_session_001",
         name         = "test_session",
@@ -468,9 +468,9 @@ class TestMissionPlannerRuleBased:
     def _make_session_and_planner(self, tmp_path):
         from modules.session import SessionMeta, Session, SessionStatus, Mode
         from ai.planner import MissionPlanner
-        from datetime import datetime
+        from datetime import datetime, timezone
 
-        now  = datetime.utcnow().isoformat()
+        now  = datetime.now(timezone.utc).isoformat()
         meta = SessionMeta(
             session_id = "plan_test_001",
             name       = "plan_test",

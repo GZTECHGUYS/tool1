@@ -7,7 +7,7 @@ from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, asdict, field
 from enum import Enum
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 import json
 
@@ -61,7 +61,7 @@ class TacticType(Enum):
 @dataclass
 class Finding:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     
     finding_type: FindingType = FindingType.RECONNAISSANCE
     severity: Severity = Severity.INFO
@@ -118,7 +118,7 @@ class SessionState:
     compromised_targets: set = field(default_factory=set)
     executed_modules: set = field(default_factory=set)
     
-    started: datetime = field(default_factory=datetime.utcnow)
+    started: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     
     def add_finding(self, finding: Finding):
         self.all_findings.append(finding)

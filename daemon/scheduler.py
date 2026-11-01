@@ -15,7 +15,7 @@ by the scheduler.
 import json
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib  import Path
 from typing   import Callable, Dict, List, Optional
 
@@ -230,7 +230,7 @@ class Scheduler:
                     {k: v for k, v in j.to_dict().items() if k != "fn"}
                     for j in self._jobs.values()
                 ],
-                "saved_at": datetime.utcnow().isoformat(),
+                "saved_at": datetime.now(timezone.utc).isoformat(),
             }
             self.state_path.write_text(
                 json.dumps(state, indent=2),

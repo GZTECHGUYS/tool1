@@ -13,7 +13,7 @@ Outputs
 """
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib  import Path
 from typing   import Dict, List, Optional, Tuple
 
@@ -203,7 +203,7 @@ class CoverageMapper:
         result = {
             "session_id":         self.session.meta.session_id,
             "target":             self.session.meta.target,
-            "generated_at":       datetime.utcnow().isoformat(),
+            "generated_at":       datetime.now(timezone.utc).isoformat(),
             "observed_count":     len(observed_techniques),
             "detected_count":     len(detected_techniques),
             "gap_count":          len(gaps),

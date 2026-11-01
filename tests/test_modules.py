@@ -13,7 +13,7 @@ Unit tests for ARDF modules:
 import json
 import pytest
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib  import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -33,7 +33,7 @@ class TestSession:
         import modules.session as sm
         sm.SESSIONS_ROOT = tmp_path / "sessions"
 
-        now  = datetime.utcnow().isoformat()
+        now  = datetime.now(timezone.utc).isoformat()
         meta = SessionMeta(
             session_id = "sess_test_001",
             name       = "test",
@@ -243,7 +243,7 @@ class TestFindingGraph:
         )
         import modules.session as sm
         sm.SESSIONS_ROOT = tmp_path / "sessions"
-        now  = datetime.utcnow().isoformat()
+        now  = datetime.now(timezone.utc).isoformat()
         meta = SessionMeta(
             session_id = "graph_test_001",
             name       = "graph_test",
@@ -313,7 +313,7 @@ class TestFindingGraph:
         from modules.session import SessionMeta, Session, SessionStatus, Mode
         import modules.session as sm
         sm.SESSIONS_ROOT = tmp_path / "sessions2"
-        now  = datetime.utcnow().isoformat()
+        now  = datetime.now(timezone.utc).isoformat()
         meta = SessionMeta(
             session_id="empty_graph", name="empty",
             target="x.com", mode=Mode.RED,
@@ -350,7 +350,7 @@ class TestSigmaWriter:
         )
         import modules.session as sm
         sm.SESSIONS_ROOT = tmp_path / "sessions"
-        now  = datetime.utcnow().isoformat()
+        now  = datetime.now(timezone.utc).isoformat()
         meta = SessionMeta(
             session_id="sigma_test", name="sigma",
             target="example.com", mode=Mode.RED,
@@ -440,7 +440,7 @@ class TestRemediationBuilder:
         )
         import modules.session as sm
         sm.SESSIONS_ROOT = tmp_path / "sessions"
-        now  = datetime.utcnow().isoformat()
+        now  = datetime.now(timezone.utc).isoformat()
         meta = SessionMeta(
             session_id="rem_test", name="rem",
             target="example.com", mode=Mode.RED,
@@ -522,7 +522,7 @@ class TestCoverageMapper:
         )
         import modules.session as sm
         sm.SESSIONS_ROOT = tmp_path / "sessions"
-        now  = datetime.utcnow().isoformat()
+        now  = datetime.now(timezone.utc).isoformat()
         meta = SessionMeta(
             session_id="cov_test", name="cov",
             target="example.com", mode=Mode.PURPLE,

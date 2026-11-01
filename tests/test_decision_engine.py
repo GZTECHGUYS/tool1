@@ -14,7 +14,7 @@ Tests cover:
 import json
 import pytest
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib  import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -31,7 +31,7 @@ def _make_session(tmp_path, session_id="decision_test"):
     )
     import modules.session as sm
     sm.SESSIONS_ROOT = tmp_path / "sessions"
-    now  = datetime.utcnow().isoformat()
+    now  = datetime.now(timezone.utc).isoformat()
     meta = SessionMeta(
         session_id = session_id,
         name       = session_id,

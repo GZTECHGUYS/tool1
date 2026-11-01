@@ -15,7 +15,7 @@ Outputs
 """
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib  import Path
 from typing   import Dict, List, Optional, Tuple
 
@@ -485,7 +485,7 @@ class HardeningEngine:
         report = {
             "session_id":    self.session.meta.session_id,
             "target":        self.session.meta.target,
-            "generated_at":  datetime.utcnow().isoformat(),
+            "generated_at":  datetime.now(timezone.utc).isoformat(),
             "rules_matched": len(matched_rules),
             "summary":       summary,
             "scripts":       scripts,
@@ -568,7 +568,7 @@ class HardeningEngine:
         header = f"""#!/bin/bash
 # ============================================================
 # ARDF Automated Hardening Script
-# Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}
+# Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}
 # Target   : {self.session.meta.target}
 # Session  : {self.session.meta.session_id}
 # ============================================================

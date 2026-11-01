@@ -24,7 +24,7 @@ import time
 import html
 import hashlib
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from modules.session import Session, Finding, SeverityLevel
@@ -1234,7 +1234,7 @@ class ReportBuilder:
 
     def build(self) -> str:
         m  = self.session.meta
-        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
         sections = "\n".join(filter(None, [
             self._exec_summary(),

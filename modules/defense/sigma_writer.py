@@ -8,7 +8,7 @@ imported directly into any Sigma-compatible SIEM.
 
 import uuid
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib  import Path
 from typing   import Any, Dict, List, Optional
 
@@ -352,7 +352,7 @@ class SigmaWriter:
     ):
         self.session = session
         self.logger  = logger or get_logger("defense.sigma")
-        self._today  = datetime.utcnow().strftime("%Y-%m-%d")
+        self._today  = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     # ── Public API ────────────────────────────────────────────
 

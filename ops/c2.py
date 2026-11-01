@@ -17,6 +17,29 @@ def get_controller():
 
 def _run(coro):
     try:
+        asyncio.get_running_loop()
+        in_loop = True
+    except RuntimeError:
+        in_loop = False
+    if in_loop:
+        # Called from inside a running loop (async CLI): run the coroutine
+        # in a fresh loop on a worker thread instead of failing.
+        import threading
+        box: Dict[str, Any] = {}
+
+        def _target() -> None:
+            try:
+                box["v"] = asyncio.run(coro)
+            except Exception as exc:  # noqa: BLE001
+                box["e"] = exc
+
+        t = threading.Thread(target=_target, daemon=True)
+        t.start()
+        t.join()
+        if "e" in box:
+            raise box["e"]
+        return box.get("v")
+    try:
         return asyncio.run(coro)
     except RuntimeError:  # already inside a loop (tests)
         loop = asyncio.new_event_loop()
@@ -31,8 +54,17 @@ def agents() -> List[Dict[str, Any]]:
     try:
         status = c.get_agent_status()
         if isinstance(status, dict):
-            return list(status.get("agents", status.get("items", [])).values()) \
-                if isinstance(status.get("agents", None), dict) else status.get("agents", [])
+            # Wrapped forms first: {"agents": {...}} / {"items": [...]}
+            for key in ("agents", "items"):
+                v = status.get(key)
+                if isinstance(v, dict):
+                    return list(v.values())
+                if isinstance(v, list):
+                    return v
+            # Bare mapping form: {agent_id: {info...}}
+            if status and all(isinstance(v, dict) for v in status.values()):
+                return [{"agent_id": aid, **info} for aid, info in status.items()]
+            return []
         return list(status or [])
     except Exception:
         return [{"id": aid, **a.to_dict()} for aid, a in
@@ -74,11 +106,34 @@ def failover(primary: str, backup1: str, backup2: str) -> Dict[str, Any]:
     return out
 
 
+def listener_status() -> Dict[str, Any]:
+    c = get_controller()
+    listener = getattr(c, "listener", None)
+    running = bool(listener and getattr(listener, "running", False))
+    return {
+        "running": running,
+        "host": getattr(listener, "listen_host", None) if listener else None,
+        "port": getattr(listener, "listen_port", None) if listener else None,
+    }
+
+
+def listener_start(host: str = "127.0.0.1", port: int = 4443) -> Dict[str, Any]:
+    out = _run(get_controller().start_listener(host, int(port)))
+    _publish("c2.listener.started", {"host": host, "port": int(port)})
+    return out
+
+
+def listener_stop() -> Dict[str, Any]:
+    out = _run(get_controller().stop_listener())
+    _publish("c2.listener.stopped", {})
+    return out
+
+
 def overview() -> Dict[str, Any]:
     c = get_controller()
     raw_beacons = getattr(c, "beacons", None) or {}
     if isinstance(raw_beacons, dict):
-        beacons = [str(k) for k in raw_beacons.keys()]
+        beacons = [getattr(k, "value", str(k)) for k in raw_beacons.keys()]
     else:
         beacons = [b if isinstance(b, str) else str(getattr(b, "value", b))
                    for b in raw_beacons]

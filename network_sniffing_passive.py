@@ -426,12 +426,8 @@ class NetworkSnifferOrchestrator:
 
 
 def main():
-    """Demo: network sniffing."""
-    
-    # Simulate with existing PCAP
+    """Print usage for the passive network sniffing suite."""
     sniffer = NetworkSnifferOrchestrator(interface="eth0")
-    
-    # Would run: results = sniffer.capture_all("/path/to/capture.pcap")
     print("[+] Network Sniffing Suite")
     print("    Supports: NTLM, HTTP Basic, FTP, DNS exfiltration, WPA handshakes, SMB relay")
     print("\nUsage:")

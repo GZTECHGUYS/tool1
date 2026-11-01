@@ -12,7 +12,7 @@ import time
 import uuid
 import shutil
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field, asdict
 from enum import Enum
@@ -61,7 +61,7 @@ class Finding:
     evidence:    str              = ""
     remediation: str              = ""
     tags:        List[str]        = field(default_factory=list)
-    timestamp:   str              = field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp:   str              = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     raw:         Dict[str, Any]   = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -133,8 +133,8 @@ class Session:
         elif isinstance(meta, (str, os.PathLike)):
             target = str(meta)
             chosen_mode = mode or kwargs.get("mode") or Mode.FULL
-            session_id = kwargs.get("session_id") or datetime.utcnow().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
-            now = datetime.utcnow().isoformat()
+            session_id = kwargs.get("session_id") or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
+            now = datetime.now(timezone.utc).isoformat()
             self.meta = SessionMeta(
                 session_id=session_id,
                 name=kwargs.get("name") or f"{target}_{session_id}",
@@ -172,7 +172,7 @@ class Session:
         return self.root / "meta.json"
 
     def save(self):
-        self.meta.updated_at = datetime.utcnow().isoformat()
+        self.meta.updated_at = datetime.now(timezone.utc).isoformat()
         with open(self.meta_file, "w") as f:
             json.dump(self.meta.to_dict(), f, indent=2)
 
@@ -239,7 +239,7 @@ class Session:
     def set_status(self, status: SessionStatus):
         self.meta.status = status
         if status == SessionStatus.COMPLETED:
-            self.meta.completed_at = datetime.utcnow().isoformat()
+            self.meta.completed_at = datetime.now(timezone.utc).isoformat()
         self.save()
 
     def export_findings_json(self) -> Path:
@@ -279,8 +279,8 @@ class SessionManager:
         name:   Optional[str] = None,
         tags:   Optional[List[str]] = None,
     ) -> Session:
-        session_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
-        now  = datetime.utcnow().isoformat()
+        session_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
+        now  = datetime.now(timezone.utc).isoformat()
         meta = SessionMeta(
             session_id   = session_id,
             name         = name or f"{target}_{session_id}",

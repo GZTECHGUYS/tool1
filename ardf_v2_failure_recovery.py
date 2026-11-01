@@ -604,11 +604,12 @@ async def integrate_failure_recovery(orchestrator):
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
-    
-    # Example usage
+
+    # Offline smoke check — constructs the real detectors (no synthetic
+    # events are fed in; production use goes through ops/jobs.py).
     detector = FailureDetector()
     recovery = AdaptiveRecovery()
     monitor = DetectionMonitor()
-    
-    # Simulate failure
-    # asyncio.run(detector.detect_scanning_activity({'response_rate': 0.3, 'timeout_rate': 0.4}))
+    print(f"FailureDetector ready: {len(getattr(detector, 'rules', []) or [])} rules loaded")
+    print(f"AdaptiveRecovery ready: strategies={sorted(getattr(recovery, 'strategies', {}) or {})}")
+    print(f"DetectionMonitor ready: {monitor.__class__.__name__}")
