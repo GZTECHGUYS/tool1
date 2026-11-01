@@ -527,15 +527,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     """Main entry point."""
-    args = parse_args()
+    # The V2 CLI owns its own subcommands (engagement/c2/agents/...), which
+    # the main parser below would reject — dispatch BEFORE parse_args().
+    if "--v2" in sys.argv or "--experimental" in sys.argv:
+        _run_v2_cli()
+        return
 
-    if args.v2:
-        try:
-            _run_v2_cli()
-            return
-        except Exception as exc:
-            print(f"\033[31mExperimental V2 launch failed: {exc}\033[0m")
-            raise
+    args = parse_args()
 
     # Print banner
     if not args.chat:
