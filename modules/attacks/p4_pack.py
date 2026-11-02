@@ -53,7 +53,10 @@ _UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
 _SECLISTS_DIR = Path("/usr/share/seclists")
 _WORDLIST_FALLBACKS = {
     "content": [_SECLISTS_DIR / "Discovery/Web-Content/common.txt",
-                _SECLISTS_DIR / "Discovery/Web-Content/raft-small-words.txt"],
+                _SECLISTS_DIR / "Discovery/Web-Content/raft-small-words.txt",
+                # dirb ships common.txt too (installed with apt dirb)
+                Path("/usr/share/dirb/wordlists/common.txt"),
+                Path("/usr/share/dirb/wordlists/big.txt")],
     "vhost": [_SECLISTS_DIR / "Discovery/DNS/subdomains-top1million-5000.txt",
               _SECLISTS_DIR / "Discovery/DNS/subdomains-top1million-20000.txt"],
 }

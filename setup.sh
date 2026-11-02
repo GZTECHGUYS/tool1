@@ -86,9 +86,19 @@ if [[ "$DO_APT" -eq 1 ]]; then
     DEBIAN_FRONTEND=noninteractive "${APT[@]}" install -y $MISSING
   fi
   if [[ "$DO_WORDS" -eq 1 ]]; then
-    echo "[*] installing wordlists (optional)..."
-    DEBIAN_FRONTEND=noninteractive "${APT[@]}" install -y seclists wordlists \
-      || echo "[!] wordlists package failed (optional, continuing)"
+    # seclists is ~545MB download / ~2GB installed — only attempt when the
+    # disk can actually take it (a failed unpack leaves dpkg noise).
+    FREE_MB=$(df -m --output=avail / | tail -1 | tr -d ' ')
+    if [[ "$FREE_MB" -ge 2600 ]]; then
+      echo "[*] installing wordlists (optional)..."
+      DEBIAN_FRONTEND=noninteractive "${APT[@]}" install -y seclists wordlists \
+        || echo "[!] wordlists package failed (optional, continuing)"
+    else
+      echo "[!] only ${FREE_MB}MB free; seclists needs ~2600MB — skipping"
+      echo "    (gobuster falls back to /usr/share/dirb/wordlists/common.txt)"
+      DEBIAN_FRONTEND=noninteractive "${APT[@]}" install -y wordlists \
+        || echo "[!] wordlists package failed (optional, continuing)"
+    fi
   fi
 else
   echo "[*] --no-apt: skipping package installation"

@@ -51,6 +51,17 @@ APT_PY_PACKAGES = {
     "dnspython": "python3-dnspython",
 }
 
+# Kali renamed some tool binaries; accept any known alias.
+TOOL_ALIASES = {
+    "secretsdump.py": ("impacket-secretsdump", "impacket-secretsdump.py"),
+}
+
+
+def _tool_found(binary: str) -> bool:
+    if shutil.which(binary):
+        return True
+    return any(shutil.which(a) for a in TOOL_ALIASES.get(binary, ()))
+
 
 def missing_apt_packages() -> List[str]:
     """Apt package names for everything `check()` reports missing.
@@ -60,7 +71,7 @@ def missing_apt_packages() -> List[str]:
     """
     pkgs: List[str] = []
     for binary, apt, _purpose in TOOLS:
-        if shutil.which(binary) is None:
+        if not _tool_found(binary):
             pkgs.append(apt)
     for mod, pip_name, _purpose in PY_DEPS:
         try:
@@ -79,7 +90,7 @@ def missing_apt_packages() -> List[str]:
 def check() -> Dict[str, Any]:
     tools: List[Dict[str, Any]] = []
     for binary, apt, purpose in TOOLS:
-        found = shutil.which(binary) is not None
+        found = _tool_found(binary)
         tools.append({"tool": binary, "installed": found,
                       "purpose": purpose,
                       "fix": None if found else f"sudo apt-get install -y {apt}"})
