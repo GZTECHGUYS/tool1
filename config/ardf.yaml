@@ -517,6 +517,20 @@ cloudflare:
         timeout: 60
 
 # ─────────────────────────────────────────────────────────────
+# Wi-Fi kit (live hardware)
+# ─────────────────────────────────────────────────────────────
+# Used by the Tier-3 wifi_adjacency module. The survey is read-only;
+# PMKID capture only runs for a BSSID that appears in allowed_bssids.
+wifi:
+  enabled: true
+  interface: ""            # auto-detect via iw/nmcli when empty
+  authorization_ref: ""    # per-engagement ref; ARDF_WIFI_AUTH also works
+  allowed_bssids: []       # explicit BSSID allow-list (required for PMKID)
+  allowed_ssids: []        # expected SSIDs -> evil-twin detection
+  scan_timeout: 45
+  max_aps: 250
+
+# ─────────────────────────────────────────────────────────────
 # Scope Guardrail (authorised targets only)
 # ─────────────────────────────────────────────────────────────
 # The dashboard and job runner REFUSE any target not listed here

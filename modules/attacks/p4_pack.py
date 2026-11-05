@@ -35,6 +35,7 @@ import re
 import shutil
 import socket
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
@@ -43,7 +44,7 @@ from modules.logger import ARDFLogger
 from modules.session import Finding, SeverityLevel, Session
 
 from .base import AttackModule, require_in_scope
-from .p3_pack import _SEV, _base_url, _host_of, _http
+from .p3_pack import _SEV, _base_url, _host_of, _http, _scope_allowed
 
 _UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 "
@@ -59,6 +60,10 @@ _WORDLIST_FALLBACKS = {
                 Path("/usr/share/dirb/wordlists/big.txt")],
     "vhost": [_SECLISTS_DIR / "Discovery/DNS/subdomains-top1million-5000.txt",
               _SECLISTS_DIR / "Discovery/DNS/subdomains-top1million-20000.txt"],
+    "passwords": [_SECLISTS_DIR / "Passwords/Common-Credentials/10k-most-common.txt",
+                  _SECLISTS_DIR / "Passwords/Common-Credentials/10-million-password-list-top-1000.txt",
+                  Path("/usr/share/wordlists/rockyou.txt"),
+                  Path("/usr/share/wordlists/rockyou.txt.gz")],
 }
 
 
@@ -844,6 +849,630 @@ class CertTransparency(AttackModule):
                 "count": len(found), "hostnames": found}
 
 
+class FfufContentEnum(AttackModule):
+    id = "ffuf_content_enum"
+    title = "ffuf content discovery"
+    phase = "P4"
+    tier = 2
+    summary = ("Fast directory/content fuzzing with ffuf (JSON output), "
+               "seclists wordlist or spec['wordlist'], scope-filtered.")
+
+    def plan(self, session: Session, spec: Dict[str, Any],
+             logger: ARDFLogger) -> Dict[str, Any]:
+        url = _base_url(session, spec)
+        return {"module": self.id, "mode": "plan", "target": url,
+                "steps": ["resolve wordlist", "ffuf -u <base>/FUZZ -mc ...",
+                          "parse JSON results", "record interesting paths"]}
+
+    def execute(self, session: Session, spec: Dict[str, Any],
+                logger: ARDFLogger) -> Dict[str, Any]:
+        url = _base_url(session, spec)
+        require_in_scope(_host_of(url))
+        ffuf = _need("ffuf", fix="apt install ffuf")
+        wordlist = _wordlist("content", spec)
+        match_codes = str(spec.get("match_codes") or
+                          "200,204,301,302,307,401,403")
+        threads = max(1, min(int(spec.get("threads") or 20), 50))
+        base = url.rstrip("/") + "/FUZZ"
+        handle = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+        out_path = handle.name
+        handle.close()
+        argv = [ffuf, "-u", base, "-w", wordlist, "-mc", match_codes,
+                "-t", str(threads), "-timeout", "10", "-s", "-of", "json",
+                "-o", out_path]
+        if spec.get("extensions"):
+            argv += ["-e", str(spec["extensions"]).lstrip(".")]
+        try:
+            try:
+                proc = _run(argv, timeout=int(spec.get("timeout") or 900))
+            except subprocess.TimeoutExpired:
+                return {"module": self.id, "mode": "exec", "target": url,
+                        "status": "timeout", "tool": "ffuf"}
+            try:
+                payload = json.loads(Path(out_path).read_text(
+                    encoding="utf-8", errors="replace") or "{}")
+            except Exception:
+                payload = {}
+        finally:
+            try:
+                Path(out_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+        results = payload.get("results") or []
+        found: List[Dict[str, Any]] = []
+        for row in results[:200]:
+            if not isinstance(row, dict):
+                continue
+            path = str(row.get("input", {}).get("FUZZ") or
+                       row.get("input") or "")
+            found.append({"path": path, "status": row.get("status"),
+                          "length": row.get("length"),
+                          "url": row.get("url")})
+        for hit in found[:40]:
+            sev = "medium" if hit["status"] in (200, 401, 403) else "info"
+            _finding(session, f"ffuf content {hit['path']} ({hit['status']})",
+                     sev, host=_host_of(url),
+                     evidence=f"{hit['status']} {hit.get('url') or hit['path']}",
+                     tags=["ffuf", "content"],
+                     description="Path surfaced by ffuf content discovery.",
+                     remediation="Review exposure; gate admin/debug paths.",
+                     raw=hit)
+        logger.info(f"ffuf {url}: {len(found)} path(s)")
+        return {"module": self.id, "mode": "exec", "target": url,
+                "wordlist": wordlist, "found": found,
+                "found_count": len(found), "rc": proc["rc"],
+                "stderr": proc["stderr"][-400:]}
+
+
+class SubfinderEnum(AttackModule):
+    id = "subfinder_enum"
+    title = "subfinder passive subdomain enumeration"
+    phase = "P4"
+    tier = 2
+    summary = ("Passive subdomain discovery with subfinder, filtered to the "
+               "engagement scope before anything is recorded.")
+
+    def plan(self, session: Session, spec: Dict[str, Any],
+             logger: ARDFLogger) -> Dict[str, Any]:
+        domain = _host_of(_plan(session, spec))
+        return {"module": self.id, "mode": "plan", "domain": domain,
+                "steps": ["subfinder -d <domain> -silent -all",
+                          "de-duplicate + scope-filter",
+                          "record in-scope hostnames only"]}
+
+    def execute(self, session: Session, spec: Dict[str, Any],
+                logger: ARDFLogger) -> Dict[str, Any]:
+        domain = _host_of(_plan(session, spec))
+        if domain.startswith("www."):
+            domain = domain[4:]
+        require_in_scope(domain)
+        subfinder = _need("subfinder", fix="apt install subfinder")
+        try:
+            proc = _run([subfinder, "-d", domain, "-silent", "-all"],
+                        timeout=int(spec.get("timeout") or 300))
+        except subprocess.TimeoutExpired:
+            return {"module": self.id, "mode": "exec", "domain": domain,
+                    "status": "timeout", "tool": "subfinder"}
+        found, dropped = [], 0
+        for line in proc["stdout"].splitlines():
+            name = line.strip().lower().rstrip(".")
+            if not name or " " in name:
+                continue
+            if _scope_allowed(name):
+                found.append(name)
+            else:
+                dropped += 1
+        found = sorted(set(found))
+        if found:
+            _finding(session, f"subfinder: {len(found)} in-scope host(s) for "
+                              f"{domain}", "info", host=domain,
+                     evidence="\n".join(found[:80]),
+                     tags=["subfinder", "subdomains", "passive"],
+                     description=f"{dropped} out-of-scope result(s) dropped.",
+                     remediation="Continuously inventory DNS and retire "
+                                 "stale records.",
+                     raw={"domain": domain, "hosts": found[:200]})
+        logger.info(f"subfinder {domain}: {len(found)} in-scope "
+                    f"({dropped} dropped)")
+        return {"module": self.id, "mode": "exec", "domain": domain,
+                "hosts": found, "count": len(found),
+                "dropped_out_of_scope": dropped, "rc": proc["rc"]}
+
+
+class HttpxProbe(AttackModule):
+    id = "httpx_probe"
+    title = "httpx live-host and tech probe"
+    phase = "P4"
+    tier = 2
+    summary = ("Confirms live HTTP(S) endpoints with httpx, capturing status, "
+               "title, webserver and detected technologies as JSON.")
+
+    def plan(self, session: Session, spec: Dict[str, Any],
+             logger: ARDFLogger) -> Dict[str, Any]:
+        url = _base_url(session, spec)
+        return {"module": self.id, "mode": "plan", "target": url,
+                "steps": ["httpx -u <url> -json", "parse status/title/tech",
+                          "record live endpoint metadata"]}
+
+    def execute(self, session: Session, spec: Dict[str, Any],
+                logger: ARDFLogger) -> Dict[str, Any]:
+        url = _base_url(session, spec)
+        require_in_scope(_host_of(url))
+        httpx = _need("httpx", fix="apt install httpx-toolkit")
+        argv = [httpx, "-u", url, "-silent", "-json", "-status-code",
+                "-title", "-tech-detect", "-no-color", "-timeout", "10"]
+        try:
+            proc = _run(argv, timeout=int(spec.get("timeout") or 180))
+        except subprocess.TimeoutExpired:
+            return {"module": self.id, "mode": "exec", "target": url,
+                    "status": "timeout", "tool": "httpx"}
+        rows: List[Dict[str, Any]] = []
+        for line in proc["stdout"].splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                doc = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            host = _host_of(str(doc.get("url") or doc.get("input") or ""))
+            if host and not _scope_allowed(host):
+                continue
+            rows.append({"url": doc.get("url"), "status": doc.get("status_code"),
+                         "title": doc.get("title"),
+                         "webserver": doc.get("webserver"),
+                         "tech": doc.get("tech") or [],
+                         "content_length": doc.get("content_length")})
+        if rows:
+            _finding(session, f"httpx live endpoint on {_host_of(url)}",
+                     "info", host=_host_of(url),
+                     evidence=json.dumps(rows[:20], indent=1)[:2000],
+                     tags=["httpx", "live", "tech"],
+                     description="Endpoint responded to an HTTP probe.",
+                     remediation="Remove unnecessary technology disclosure "
+                                 "and retire unused endpoints.",
+                     raw={"rows": rows[:100]})
+        logger.info(f"httpx {url}: {len(rows)} live row(s)")
+        return {"module": self.id, "mode": "exec", "target": url,
+                "rows": rows, "count": len(rows), "rc": proc["rc"]}
+
+
+class NaabuPortScan(AttackModule):
+    id = "naabu_port_scan"
+    title = "naabu fast port scan"
+    phase = "P4"
+    tier = 2
+    summary = ("Fast SYN/CONNECT port discovery with naabu over the top "
+               "ports or spec['ports']; scope-checked before scanning.")
+
+    def plan(self, session: Session, spec: Dict[str, Any],
+             logger: ARDFLogger) -> Dict[str, Any]:
+        host = _host_of(_plan(session, spec))
+        return {"module": self.id, "mode": "plan", "host": host,
+                "ports": str(spec.get("ports") or "top-1000"),
+                "steps": ["resolve target", "naabu -host <host> -silent",
+                          "record open host:port pairs"]}
+
+    def execute(self, session: Session, spec: Dict[str, Any],
+                logger: ARDFLogger) -> Dict[str, Any]:
+        host = _host_of(_plan(session, spec))
+        require_in_scope(host)
+        naabu = _need("naabu", fix="apt install naabu")
+        rate = max(1, min(int(spec.get("rate") or 100), 1000))
+        if spec.get("ports"):
+            argv = [naabu, "-host", host, "-p", str(spec["ports"]),
+                    "-silent", "-rate", str(rate)]
+        else:
+            argv = [naabu, "-host", host, "-top-ports", "1000",
+                    "-silent", "-rate", str(rate)]
+        try:
+            proc = _run(argv, timeout=int(spec.get("timeout") or 600))
+        except subprocess.TimeoutExpired:
+            return {"module": self.id, "mode": "exec", "host": host,
+                    "status": "timeout", "tool": "naabu"}
+        ports: List[Dict[str, Any]] = []
+        for line in proc["stdout"].splitlines():
+            match = re.match(r"^\[?([\w\.\-:\[\]]+)\]?:(\d+)\s*$", line.strip())
+            if match:
+                ports.append({"host": match.group(1), "port": int(match.group(2))})
+        if ports:
+            _finding(session, f"naabu: {len(ports)} open port(s) on {host}",
+                     "info", host=host,
+                     evidence=", ".join(str(p["port"]) for p in ports[:80]),
+                     tags=["naabu", "ports"],
+                     description="Open ports discovered by naabu.",
+                     remediation="Restrict management ports to trusted "
+                                 "networks and close unused listeners.",
+                     raw={"ports": ports[:200]})
+        logger.info(f"naabu {host}: {len(ports)} open port(s)")
+        return {"module": self.id, "mode": "exec", "host": host,
+                "ports": ports, "count": len(ports), "rc": proc["rc"]}
+
+
+class KatanaCrawl(AttackModule):
+    id = "katana_crawl"
+    title = "katana web crawler"
+    phase = "P4"
+    tier = 2
+    summary = ("Crawls the target with katana (depth-limited, rate-limited) "
+               "and returns only in-scope URLs without fetching them.")
+
+    def plan(self, session: Session, spec: Dict[str, Any],
+             logger: ARDFLogger) -> Dict[str, Any]:
+        url = _base_url(session, spec)
+        return {"module": self.id, "mode": "plan", "target": url,
+                "depth": max(1, min(int(spec.get("depth") or 2), 4)),
+                "steps": ["katana -u <url> -d 2 -rl 20",
+                          "de-duplicate + scope-filter", "record URLs"]}
+
+    def execute(self, session: Session, spec: Dict[str, Any],
+                logger: ARDFLogger) -> Dict[str, Any]:
+        url = _base_url(session, spec)
+        require_in_scope(_host_of(url))
+        katana = _need("katana", fix="apt install katana")
+        depth = max(1, min(int(spec.get("depth") or 2), 4))
+        rate = max(1, min(int(spec.get("rate") or 20), 100))
+        try:
+            proc = _run([katana, "-u", url, "-silent", "-d", str(depth),
+                         "-rl", str(rate), "-timeout", "10", "-kf", "all",
+                         "-no-color"],
+                        timeout=int(spec.get("timeout") or 600))
+        except subprocess.TimeoutExpired:
+            return {"module": self.id, "mode": "exec", "target": url,
+                    "status": "timeout", "tool": "katana"}
+        urls, dropped = [], 0
+        for line in proc["stdout"].splitlines():
+            value = line.strip()
+            if not value.startswith(("http://", "https://")):
+                continue
+            if _scope_allowed(value):
+                urls.append(value)
+            else:
+                dropped += 1
+        urls = sorted(set(urls))
+        if urls:
+            _finding(session, f"katana crawled {len(urls)} URL(s) on "
+                              f"{_host_of(url)}", "info",
+                     host=_host_of(url), evidence="\n".join(urls[:80]),
+                     tags=["katana", "crawl", "urls"],
+                     description=f"{dropped} out-of-scope URL(s) dropped.",
+                     remediation="Keep crawlable surface minimal and remove "
+                                 "debug/backup endpoints.",
+                     raw={"urls": urls[:300]})
+        logger.info(f"katana {url}: {len(urls)} in-scope URL(s)")
+        return {"module": self.id, "mode": "exec", "target": url,
+                "urls": urls, "count": len(urls),
+                "dropped_out_of_scope": dropped, "rc": proc["rc"]}
+
+
+class DalfoxXss(AttackModule):
+    id = "dalfox_xss"
+    title = "dalfox XSS scanner"
+    phase = "P4"
+    tier = 2
+    summary = ("Runs dalfox against one URL for reflected/DOM XSS, "
+               "rate-limited, with proof-of-concept lines folded into findings.")
+
+    def plan(self, session: Session, spec: Dict[str, Any],
+             logger: ARDFLogger) -> Dict[str, Any]:
+        url = _base_url(session, spec)
+        return {"module": self.id, "mode": "plan", "target": url,
+                "steps": ["verify scope", "dalfox url <url> --silent",
+                          "record [VULN]/POC lines"]}
+
+    def execute(self, session: Session, spec: Dict[str, Any],
+                logger: ARDFLogger) -> Dict[str, Any]:
+        url = _base_url(session, spec)
+        require_in_scope(_host_of(url))
+        dalfox = _need("dalfox", fix="go install "
+                                     "github.com/hahwul/dalfox/v2@latest")
+        argv = [dalfox, "url", url, "--silent", "--no-color",
+                "--skip-bav", "--timeout", "10", "--delay", "100"]
+        try:
+            proc = _run(argv, timeout=int(spec.get("timeout") or 600))
+        except subprocess.TimeoutExpired:
+            return {"module": self.id, "mode": "exec", "target": url,
+                    "status": "timeout", "tool": "dalfox"}
+        hits: List[Dict[str, Any]] = []
+        for line in proc["stdout"].splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            if ("[VULN]" in text or "POC" in text or "XSS" in text.upper()):
+                if text.startswith("[") or "http" in text:
+                    hits.append({"line": text[:500]})
+        hits = hits[:20]
+        for hit in hits:
+            _finding(session, f"dalfox XSS candidate on {_host_of(url)}",
+                     "high", host=_host_of(url), evidence=hit["line"],
+                     tags=["dalfox", "xss"],
+                     description="dalfox reported an XSS proof-of-concept.",
+                     remediation="Context-encode output, use a strict CSP, "
+                                 "and validate input server-side.",
+                     raw=hit)
+        logger.info(f"dalfox {url}: {len(hits)} candidate(s)")
+        return {"module": self.id, "mode": "exec", "target": url,
+                "hits": hits, "hits_count": len(hits), "rc": proc["rc"]}
+
+
+class NiktoScan(AttackModule):
+    id = "nikto_scan"
+    title = "nikto web server scan"
+    phase = "P4"
+    tier = 2
+    summary = ("Runs nikto against the target with a bounded max-time and "
+               "records missing headers, dangerous files and outdated software.")
+
+    def plan(self, session: Session, spec: Dict[str, Any],
+             logger: ARDFLogger) -> Dict[str, Any]:
+        url = _base_url(session, spec)
+        return {"module": self.id, "mode": "plan", "target": url,
+                "max_time": str(spec.get("max_time") or "120s"),
+                "steps": ["nikto -h <url> -nointeractive",
+                          "bounded -maxtime", "fold '+' rows into findings"]}
+
+    def execute(self, session: Session, spec: Dict[str, Any],
+                logger: ARDFLogger) -> Dict[str, Any]:
+        url = _base_url(session, spec)
+        require_in_scope(_host_of(url))
+        nikto = _need("nikto", fix="apt install nikto")
+        max_time = str(spec.get("max_time") or "120s")
+        try:
+            proc = _run([nikto, "-h", url, "-nointeractive", "-maxtime",
+                         max_time, "-Tuning", "123b", "-ask", "no"],
+                        timeout=int(spec.get("timeout") or 300))
+        except subprocess.TimeoutExpired:
+            return {"module": self.id, "mode": "exec", "target": url,
+                    "status": "timeout", "tool": "nikto"}
+        rows: List[str] = []
+        for line in proc["stdout"].splitlines():
+            text = line.strip()
+            if text.startswith("+ ") and len(text) > 4:
+                rows.append(text[2:][:400])
+        rows = rows[:80]
+        for row in rows[:30]:
+            sev = "medium" if any(k in row.lower() for k in
+                                  ("vulnerable", "outdated", "cve-",
+                                   "remote", "injection", "xss")) else "info"
+            _finding(session, f"nikto: {row[:110]}", sev,
+                     host=_host_of(url), evidence=row,
+                     tags=["nikto", "web-server"],
+                     description="nikto finding against the web server.",
+                     remediation="Patch the server and remove unnecessary "
+                                 "files/headers.",
+                     raw={"row": row})
+        logger.info(f"nikto {url}: {len(rows)} row(s)")
+        return {"module": self.id, "mode": "exec", "target": url,
+                "findings": rows, "count": len(rows), "rc": proc["rc"]}
+
+
+class NxcSmbEnum(AttackModule):
+    id = "nxc_smb_enum"
+    title = "netexec SMB enumeration"
+    phase = "P4"
+    tier = 2
+    summary = ("Null-session SMB share/signing enumeration with nxc/netexec "
+               "(or crackmapexec); no credentials are attempted.")
+
+    def plan(self, session: Session, spec: Dict[str, Any],
+             logger: ARDFLogger) -> Dict[str, Any]:
+        host = _host_of(_plan(session, spec))
+        return {"module": self.id, "mode": "plan", "host": host, "port": 445,
+                "steps": ["check tcp/445", "nxc smb <host> -u '' -p '' "
+                          "--shares", "record readable shares + signing"]}
+
+    def execute(self, session: Session, spec: Dict[str, Any],
+                logger: ARDFLogger) -> Dict[str, Any]:
+        host = _host_of(_plan(session, spec))
+        require_in_scope(host)
+        port = int(spec.get("port") or 445)
+        if not _port_open(host, port):
+            return {"module": self.id, "mode": "exec", "host": host,
+                    "port": port, "open": False}
+        tool = _need("nxc", "netexec", "crackmapexec",
+                     fix="pip install netexec")
+        try:
+            proc = _run([tool, "smb", host, "-u", "", "-p", "", "--shares",
+                         "--no-progress"],
+                        timeout=int(spec.get("timeout") or 120))
+        except subprocess.TimeoutExpired:
+            return {"module": self.id, "mode": "exec", "host": host,
+                    "port": port, "status": "timeout", "tool": "nxc"}
+        shares: List[str] = []
+        rows: List[str] = []
+        for line in proc["stdout"].splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            if text.startswith("SMB") or text.startswith("+"):
+                rows.append(text[:400])
+            for match in re.findall(r"\\\\[^\s\\]+\\[^\s]+", text):
+                shares.append(match)
+        shares = sorted(set(shares))
+        signing_off = any("signing:false" in r.lower().replace(" ", "")
+                          or "signing: false" in r.lower() for r in rows)
+        if shares or rows:
+            _finding(session, f"SMB enumeration on {host}", "medium",
+                     host=host,
+                     evidence="\n".join(rows[:20] + shares[:20])[:2000],
+                     tags=["smb", "nxc", "enumeration", "signing"],
+                     description=("Readable shares or signing posture were "
+                                  "returned over an unauthenticated session."
+                                  if shares else
+                                  "SMB metadata was returned to an "
+                                  "unauthenticated session."),
+                     remediation="Require SMB signing, disable null sessions "
+                                 "and review share ACLs.",
+                     raw={"rows": rows[:50], "shares": shares[:100],
+                          "signing_off": signing_off})
+        logger.info(f"nxc smb {host}: {len(shares)} share(s)")
+        return {"module": self.id, "mode": "exec", "host": host,
+                "port": port, "open": True, "shares": shares,
+                "rows": rows[:100], "signing_off": signing_off,
+                "rc": proc["rc"]}
+
+
+class BloodhoundIngest(AttackModule):
+    id = "bloodhound_ingest"
+    title = "BloodHound collection / ingest"
+    phase = "P4"
+    tier = 2
+    summary = ("Runs bloodhound-python with supplied credentials to collect "
+               "AD relationships into a zip for local BloodHound import.")
+
+    def plan(self, session: Session, spec: Dict[str, Any],
+             logger: ARDFLogger) -> Dict[str, Any]:
+        host = _host_of(spec.get("dc") or _plan(session, spec))
+        return {"module": self.id, "mode": "plan", "dc": host,
+                "domain": str(spec.get("domain") or ""),
+                "steps": ["require domain/user/password spec",
+                          "bloodhound-python -c All --zip",
+                          "import zip into BloodHound"]}
+
+    def execute(self, session: Session, spec: Dict[str, Any],
+                logger: ARDFLogger) -> Dict[str, Any]:
+        dc = _host_of(spec.get("dc") or _plan(session, spec))
+        require_in_scope(dc)
+        domain = str(spec.get("domain") or "").strip()
+        username = str(spec.get("username") or spec.get("user") or "").strip()
+        password = str(spec.get("password") or "").strip()
+        nt_hash = str(spec.get("hash") or "").strip()
+        missing = [k for k, v in (("domain", domain), ("username", username))
+                   if not v]
+        if not password and not nt_hash:
+            missing.append("password or hash")
+        if missing:
+            return {"module": self.id, "mode": "exec",
+                    "status": "input_required", "dc": dc,
+                    "missing": missing,
+                    "note": "BloodHound collection needs AD credentials; pass "
+                            "spec['domain'/'username'/'password']."}
+        bh = _need("bloodhound-python", fix="pip install bloodhound")
+        outdir = tempfile.mkdtemp(prefix="ardf-bloodhound-")
+        argv = [bh, "-d", domain, "-u", username, "-ns", dc,
+                "-c", "All", "--zip", "-o", outdir]
+        if password:
+            argv += ["-p", password]
+        else:
+            argv += ["--hashes", nt_hash]
+        try:
+            proc = _run(argv, timeout=int(spec.get("timeout") or 900))
+        except subprocess.TimeoutExpired:
+            zips = sorted(str(p) for p in Path(outdir).glob("*.zip"))
+            return {"module": self.id, "mode": "exec", "dc": dc,
+                    "domain": domain, "output_dir": outdir, "zips": zips,
+                    "status": "timeout", "tool": "bloodhound-python"}
+        zips = sorted(str(p) for p in Path(outdir).glob("*.zip"))
+        if zips:
+            _finding(session, f"BloodHound collection complete for {domain}",
+                     "info", host=dc,
+                     evidence="\n".join(zips[:10]),
+                     tags=["bloodhound", "ad", "collection"],
+                     description="AD relationship data collected for offline "
+                                 "analysis.",
+                     remediation="Review the imported graph for shortest "
+                                 "paths to Tier-0 assets.",
+                     raw={"zips": zips, "dc": dc})
+        logger.info(f"bloodhound {domain or dc}: {len(zips)} zip(s)")
+        return {"module": self.id, "mode": "exec", "dc": dc,
+                "domain": domain, "output_dir": outdir, "zips": zips,
+                "rc": proc["rc"], "stderr": proc["stderr"][-400:]}
+
+
+class HashcatCrack(AttackModule):
+    id = "hashcat_crack"
+    title = "hashcat offline hash cracking"
+    phase = "P4"
+    tier = 2
+    summary = ("Cracks a supplied hash/hash-file with hashcat dictionary mode "
+               "under a bounded runtime and reports recovered plaintext.")
+
+    def plan(self, session: Session, spec: Dict[str, Any],
+             logger: ARDFLogger) -> Dict[str, Any]:
+        return {"module": self.id, "mode": "plan",
+                "target": _plan(session, spec),
+                "hash_mode": int(spec.get("hash_mode") or 0),
+                "runtime": max(10, min(int(spec.get("runtime") or 120), 600)),
+                "steps": ["write hash file", "hashcat -m <mode> -a 0",
+                          "bounded --runtime", "read potfile for cracked"]}
+
+    def execute(self, session: Session, spec: Dict[str, Any],
+                logger: ARDFLogger) -> Dict[str, Any]:
+        _plan(session, spec)
+        hash_mode = int(spec.get("hash_mode") or 0)
+        raw_hash = str(spec.get("hash") or "").strip()
+        hash_file = str(spec.get("hash_file") or "").strip()
+        if not raw_hash and not hash_file:
+            return {"module": self.id, "mode": "exec",
+                    "status": "input_required",
+                    "note": "pass spec['hash'] or spec['hash_file']"}
+        if hash_file and not Path(hash_file).exists():
+            return {"module": self.id, "mode": "exec",
+                    "status": "error", "error": f"hash_file not found: "
+                                                f"{hash_file}"}
+        hashcat = _need("hashcat", fix="apt install hashcat")
+        wordlist = _wordlist("passwords", spec)
+        runtime = max(10, min(int(spec.get("runtime") or 120), 600))
+        hash_path = hash_file
+        tmp_hash = None
+        if raw_hash:
+            handle = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".hash", delete=False)
+            handle.write(raw_hash + "\n")
+            handle.close()
+            hash_path = handle.name
+            tmp_hash = handle.name
+        pot_handle = tempfile.NamedTemporaryFile(suffix=".pot", delete=False)
+        pot_path = pot_handle.name
+        pot_handle.close()
+        timed_out = False
+        try:
+            try:
+                proc = _run([hashcat, "-m", str(hash_mode), "-a", "0",
+                             hash_path, wordlist, "--potfile-path", pot_path,
+                             "--runtime", str(runtime), "--quiet",
+                             "--status", "--status-timer", "10"],
+                            timeout=runtime + 120)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                proc = {"rc": 124, "stdout": "", "stderr": "timeout"}
+            cracked: List[Dict[str, str]] = []
+            try:
+                for line in Path(pot_path).read_text(
+                        encoding="utf-8", errors="replace").splitlines():
+                    if ":" in line:
+                        digest, plain = line.split(":", 1)
+                        cracked.append({"hash": digest[:120],
+                                        "plaintext": plain[:200]})
+            except Exception:
+                pass
+        finally:
+            for path in (tmp_hash, pot_path):
+                if path:
+                    try:
+                        Path(path).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+        if cracked:
+            _finding(session, f"hashcat recovered {len(cracked)} hash(es)",
+                     "high", host=_host_of(str(spec.get("target") or "")),
+                     evidence="\n".join(
+                         f"{c['hash'][:24]}… -> {c['plaintext']}"
+                         for c in cracked[:20]),
+                     tags=["hashcat", "cracking", "credentials"],
+                     description="Weak passwords were recovered from the "
+                                 "supplied hashes.",
+                     remediation="Enforce strong password policy, unique "
+                                 "salts and MFA.",
+                     raw={"cracked": cracked[:100], "hash_mode": hash_mode})
+        logger.info(f"hashcat mode={hash_mode}: {len(cracked)} cracked")
+        return {"module": self.id, "mode": "exec", "hash_mode": hash_mode,
+                "cracked": cracked, "cracked_count": len(cracked),
+                "wordlist": wordlist, "runtime": runtime, "rc": proc["rc"],
+                "status": "timeout" if timed_out else "completed",
+                "stderr": proc["stderr"][-400:]}
+
+
 PACK4 = [
     NmapServiceScan(),
     NucleiScan(),
@@ -856,4 +1485,14 @@ PACK4 = [
     EndpointDiffFuzzer(),
     VhostBruteforce(),
     CertTransparency(),
+    FfufContentEnum(),
+    SubfinderEnum(),
+    HttpxProbe(),
+    NaabuPortScan(),
+    KatanaCrawl(),
+    DalfoxXss(),
+    NiktoScan(),
+    NxcSmbEnum(),
+    BloodhoundIngest(),
+    HashcatCrack(),
 ]

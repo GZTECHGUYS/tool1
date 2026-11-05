@@ -14,7 +14,7 @@ real action after tier gate, WIP = in progress, DONE = verified live.
 | 4 | container_k8s             | _plan_ | kubelet 10250 / etcd 2379 / RBAC graph |
 | 5 | deserial_factory          | _plan_ | JNDI/ViewState/pickle, canary-gated classes |
 | 6 | ssh_key_reuse             | EXEC  (paramiko key try-once across loot keys) |
-| 7 | wifi_adjacency            | _plan_ | needs physical kit + explicit authorization |
+| 7 | wifi_adjacency            | EXEC | live survey via `iw`/`nmcli`/Termux radio; rogue-AP/evil-twin + open/WEP/WPS posture; allow-listed PMKID capture (hashcat 22000); needs auth ref |
 | 8 | c2_macro_chain            | _plan_ | stager builder -> ardf_v2_c2_infrastructure |
 | 9 | password_spray            | EXEC  (lockout-aware, validate/auth.test_credentials) |
 | 10| persistence_check         | _plan_ | dry-run persistence, sandbox-only reboot test |

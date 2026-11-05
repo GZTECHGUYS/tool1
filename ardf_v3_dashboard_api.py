@@ -1033,6 +1033,61 @@ class ARDFv3DashboardAPI:
                                 data.get("chain", ""))
             return jsonify(out)
 
+        # ── attack modules (P1–P4) ──────────────────────────────
+        @self.app.route("/api/v3/attacks", methods=["GET"])
+        @self.require_auth
+        def attacks_list():
+            from modules import attacks as _atk
+            status = _atk.registry_status()
+            phase = request.args.get("phase")
+            tier = request.args.get("tier", type=int)
+            rows = _atk.list_attacks(phase=phase, tier=tier)
+            return jsonify({
+                "attacks": rows,
+                "total": status["total"],
+                "by_phase": status["by_phase"],
+                "by_tier": status["by_tier"],
+                "by_status": status["by_status"],
+                "packs": status["packs"],
+                "duplicates": status["duplicates"],
+                "problems": status["problems"],
+            })
+
+        @self.app.route("/api/v3/attacks/status", methods=["GET"])
+        @self.require_auth
+        def attacks_status():
+            from modules import attacks as _atk
+            return jsonify(_atk.registry_status())
+
+        @self.app.route("/api/v3/attacks/run", methods=["POST"])
+        @self.require_auth
+        def attacks_run():
+            from modules import attacks as _atk
+            from modules.logger import get_logger
+            data = request.get_json() or {}
+            s, err = _session_or_404(data.get("session_id", ""))
+            if err:
+                return err
+            attack_id = str(data.get("attack") or "").strip()
+            if not attack_id:
+                return jsonify({"error": "need attack id"}), 400
+            spec = dict(data.get("spec") or {})
+            spec.setdefault("target", data.get("target") or s.meta.target)
+            spec["mode"] = str(data.get("mode") or "plan").lower()
+            spec["confirm_text"] = str(data.get("confirm_text") or "")
+            result = _atk.run_attack(s, attack_id, spec,
+                                     get_logger("attacks"))
+            self.ops_auth.audit("attack.run",
+                                getattr(request, "ops_user", "?"),
+                                "success" if result.get("ok") else "denied",
+                                f"{attack_id}:{spec['mode']}")
+            http_status = 200 if result.get("ok") else (
+                403 if "Tier-" in str(result.get("error", "")) or
+                "SCOPE" in str(result.get("error", "")) else 400)
+            return jsonify({"ok": bool(result.get("ok")),
+                            "result": result,
+                            "error": result.get("error")}), http_status
+
         @self.app.route("/api/v3/sessions/<sid>/findings/actions", methods=["GET"])
         @self.require_auth
         def finding_actions(sid):

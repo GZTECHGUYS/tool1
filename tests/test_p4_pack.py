@@ -19,7 +19,10 @@ from modules.session import (Mode, Session, SessionMeta, SessionStatus,
 P4_IDS = ["nmap_service_scan", "nuclei_scan", "gobuster_content_enum",
           "smb_share_enum", "kerberos_asrep_roast", "ldap_ad_enum",
           "jwt_active_check", "git_exposure_check", "endpoint_diff_fuzzer",
-          "vhost_bruteforce", "cert_transparency"]
+          "vhost_bruteforce", "cert_transparency", "ffuf_content_enum",
+          "subfinder_enum", "httpx_probe", "naabu_port_scan", "katana_crawl",
+          "dalfox_xss", "nikto_scan", "nxc_smb_enum", "bloodhound_ingest",
+          "hashcat_crack"]
 
 
 def _sess(tmp_path, target="127.0.0.1"):
@@ -51,10 +54,7 @@ def test_plan_mode_offline(tmp_path):
     s = _sess(tmp_path)
     for mid in P4_IDS:
         mod = attacks.get_attack(mid)
-        target = ("http://127.0.0.1" if mid in (
-            "nuclei_scan", "gobuster_content_enum", "jwt_active_check",
-            "git_exposure_check", "endpoint_diff_fuzzer",
-            "vhost_bruteforce") else "127.0.0.1")
+        target = "http://127.0.0.1"
         out = mod.plan(s, _spec(target), log)
         assert out["mode"] == "plan"
         assert out["module"] == mid

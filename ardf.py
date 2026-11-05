@@ -436,7 +436,17 @@ def parse_args() -> argparse.Namespace:
     attack_group.add_argument(
         "--list-attacks",
         action="store_true",
-        help="List registered offensive attack modules (P1/P2)"
+        help="List registered offensive attack modules (P1–P4)"
+    )
+    attack_group.add_argument(
+        "--attack-phase",
+        choices=["P1", "P2", "P3", "P4"],
+        help="Filter --list-attacks by pack phase"
+    )
+    attack_group.add_argument(
+        "--attack-doctor",
+        action="store_true",
+        help="Validate P1–P4 pack wiring and report any missing modules"
     )
     attack_group.add_argument(
         "--attack",
@@ -570,15 +580,79 @@ def main() -> None:
             print(f"  {tool}: {desc} - {status}")
         return
 
+    if args.attack_doctor:
+        st = attack_registry.registry_status()
+        print("\n\033[1mAttack registry status:\033[0m")
+        for pack in st["packs"]:
+            mark = "\033[32mOK\033[0m" if pack["ok"] else "\033[31mFAIL\033[0m"
+            print(f"  [{mark}] {pack['name']}: {pack['count']} module(s) "
+                  f"from {pack['module']}")
+            if pack["error"]:
+                print(f"        error: {pack['error']}")
+            for warning in pack.get("warnings", []):
+                print(f"        warn: {warning}")
+        print(f"\n  total={st['total']}  by_phase={st['by_phase']}  "
+              f"by_tier={st['by_tier']}")
+        print(f"  implemented={st['by_status']['implemented']}  "
+              f"runbook={st['by_status']['runbook']}  "
+              f"scaffold={st['by_status']['scaffold']}")
+        if st["duplicates"]:
+            print(f"  \033[31mduplicates:\033[0m {st['duplicates']}")
+        if st["problems"]:
+            print("\n\033[31mWiring problems:\033[0m")
+            for problem in st["problems"]:
+                print(f"  - {problem}")
+            sys.exit(1)
+        print("\n\033[32mRegistry healthy — no missing or duplicate modules.\033[0m")
+
+        # Wi-Fi kit readiness (Tier-3 wifi_adjacency)
+        from modules.attacks import wifi as _wifi
+        cfg = _wifi.wifi_config()
+        auth = _wifi.authorization_ref({}, cfg)
+        interfaces = _wifi.list_interfaces()
+        tool_states = []
+        for tool in ("iw", "nmcli", "termux-wifi-scaninfo",
+                     "hcxdumptool", "hcxpcapngtool"):
+            tool_states.append(f"{tool}={'yes' if _wifi.shutil.which(tool) else 'no'}")
+        print("\n\033[1mWi-Fi kit:\033[0m")
+        print(f"  enabled={_wifi.enabled(cfg)}  "
+              f"authorization_ref={'set' if auth else 'missing'}  "
+              f"interface={interfaces[0]['name'] if interfaces else 'none'}")
+        print(f"  tools: {' '.join(tool_states)}")
+        if not interfaces:
+            print("  \033[33mno wireless interface detected — plug in the kit "
+                  "or set wifi.interface\033[0m")
+        elif not auth:
+            print("  \033[33mset wifi.authorization_ref / ARDF_WIFI_AUTH "
+                  "before exec\033[0m")
+        return
+
     if args.list_attacks:
-        rows = attack_registry.list_attacks()
+        rows = attack_registry.list_attacks(phase=args.attack_phase)
+        st = attack_registry.registry_status()
         print("\n\033[1mRegistered attack modules:\033[0m")
         if not rows:
             print("  (none loaded)")
+            for pack in st["packs"]:
+                if pack["error"]:
+                    print(f"  \033[31m{pack['name']} load error:\033[0m "
+                          f"{pack['error']}")
+        current = None
         for row in rows:
-            print(f"  [{row['phase']} T{row['tier']}] {row['id']} — {row['title']}")
+            if row["phase"] != current:
+                current = row["phase"]
+                count = st["by_phase"].get(current, 0)
+                print(f"\n  \033[1m{current}\033[0m ({count} modules)")
+            print(f"  [T{row['tier']} {row['status']}] {row['id']} — "
+                  f"{row['title']}")
             if row.get("summary"):
                 print(f"        {row['summary']}")
+        print(f"\n  total={st['total']}  by_phase={st['by_phase']}  "
+              f"by_tier={st['by_tier']}")
+        for pack in st["packs"]:
+            if pack["error"]:
+                print(f"  \033[31m{pack['name']} load error:\033[0m "
+                      f"{pack['error']}")
         return
 
     if args.preflight:

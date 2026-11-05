@@ -100,6 +100,31 @@ python ardf.py --target 10.0.0.5 --attack exposed_services \
   --attack-mode exec --confirm-text APPROVE    # Tier-2 gate
 ```
 
+### Live Wi-Fi kit
+
+`wifi_adjacency` is a Tier-3 module wired to real hardware. It surveys
+nearby APs (open/WEP/WPS/evil-twin signals) and can run a targeted,
+allow-listed PMKID capture for hashcat mode `22000`.
+
+```bash
+# Linux: iw or nmcli.  Android/Termux: termux-api package + app.
+python ardf.py --target 127.0.0.1 --attack wifi_adjacency --attack-mode plan
+
+python ardf.py --target 127.0.0.1 --attack wifi_adjacency \
+  --attack-mode exec --confirm-text CONFIRM \
+  --attack-spec '{"action":"survey","authorization_ref":"ENG-2026-11","interface":"wlan0"}'
+
+# PMKID capture only for a BSSID in wifi.allowed_bssids.
+python ardf.py --target 127.0.0.1 --attack wifi_adjacency \
+  --attack-mode exec --confirm-text CONFIRM \
+  --attack-spec '{"action":"pmkid","authorization_ref":"ENG-2026-11",
+                  "interface":"wlan0mon","bssid":"AA:BB:CC:DD:EE:FF"}'
+```
+
+Configuration lives under `wifi:` in `config/ardf.yaml`; the authorization
+reference may also come from `ARDF_WIFI_AUTH`. Without an interface the
+module returns `hardware_required` — it never fakes a scan.
+
 Root `offensive_base.py` and `offensive_runner.py` are compatibility shims
 re-exporting `modules.attacks`.
 
