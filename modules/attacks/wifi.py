@@ -20,6 +20,10 @@ import re
 import shutil
 import subprocess
 import tempfile
+import hashlib
+import math
+import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -529,6 +533,280 @@ def assess_ap(ap: Dict[str, Any], allow_bssids: List[str],
         issues.append("evil-twin candidate: expected SSID on unlisted BSSID")
         severity = _raise_severity(severity, "high")
     return severity, issues
+
+
+# ─────────────────────────────────────────────────────────────
+# live tracing / distance estimation
+# ─────────────────────────────────────────────────────────────
+
+_TRACE_LOCK = threading.Lock()
+_TRACE_STATE: Dict[str, Dict[str, Any]] = {}
+_TRACE_LAST: Dict[str, Any] = {}
+
+DISTANCE_CLASSES = [
+    (1.0, "immediate"),
+    (5.0, "near"),
+    (15.0, "room"),
+    (30.0, "adjacent"),
+]
+
+
+def _cfg_number(cfg: Dict[str, Any], key: str, default: float) -> float:
+    try:
+        value = cfg.get(key, default)
+        return float(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _bounded_int(value: Any, default: int, low: int, high: int) -> int:
+    try:
+        return max(low, min(int(value), high))
+    except (TypeError, ValueError):
+        return default
+
+
+def estimate_distance(rssi: Any, reference_rssi: float = -40.0,
+                      path_loss: float = 2.7) -> Optional[float]:
+    """Log-distance path-loss estimate in metres (None for bad RSSI).
+
+    ``reference_rssi`` is the expected RSSI at one metre. This is an
+    estimate only: walls, antenna orientation and transmit power all move
+    the true distance. The dashboard labels it as such.
+    """
+    try:
+        value = float(rssi)
+    except (TypeError, ValueError):
+        return None
+    if value == 0:
+        return None
+    # Positive dBm values are not valid Wi-Fi RSSI; also avoid zero-division.
+    path_loss = max(1.0, float(path_loss or 2.7))
+    exponent = (float(reference_rssi) - value) / (10.0 * path_loss)
+    meters = 10.0 ** exponent
+    return round(max(0.3, min(meters, 500.0)), 2)
+
+
+def distance_band(meters: Optional[float]) -> str:
+    if meters is None:
+        return "unknown"
+    for limit, label in DISTANCE_CLASSES:
+        if meters < limit:
+            return label
+    return "far"
+
+
+def bssid_angle(bssid: str) -> float:
+    """Deterministic bearing from the BSSID (same device -> same spot)."""
+    raw = str(bssid or "").strip().upper()
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return float(int(digest[:8], 16) % 360)
+
+
+def map_position(distance_m: Optional[float], angle_deg: float,
+                 max_range_m: float = 50.0) -> Dict[str, float]:
+    """Return x/y percentages inside the radar circle."""
+    range_m = max(1.0, float(max_range_m or 50.0))
+    distance = 0.0 if distance_m is None else max(0.0, float(distance_m))
+    radius = math.sqrt(min(distance / range_m, 1.0)) * 42.0
+    radians = math.radians(float(angle_deg or 0.0))
+    return {
+        "x": round(50.0 + radius * math.cos(radians), 2),
+        "y": round(50.0 + radius * math.sin(radians), 2),
+    }
+
+
+def classify_device(ap: Dict[str, Any],
+                    allow_bssids: Optional[List[str]] = None,
+                    allow_ssids: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Label an observed radio as authorized, evil-twin or foreign."""
+    allow_bssids = allow_bssids or []
+    allow_ssids = allow_ssids or []
+    bssid = normalize_bssid(ap.get("bssid"))
+    ssid = str(ap.get("ssid") or "")
+    if bssid and bssid in allow_bssids:
+        return {"kind": "authorized", "foreign": False,
+                "reason": "BSSID is in the authorized allow-list"}
+    if ssid and allow_ssids and ssid in allow_ssids:
+        return {"kind": "evil_twin", "foreign": True,
+                "reason": "expected SSID on an unlisted BSSID"}
+    if not allow_bssids and not allow_ssids:
+        reason = "unlisted device (no allow-list configured)"
+    else:
+        reason = "BSSID and SSID are not in the authorized allow-lists"
+    return {"kind": "foreign", "foreign": True, "reason": reason}
+
+
+def trace_devices(aps: List[Dict[str, Any]],
+                  allow_bssids: Optional[List[str]] = None,
+                  allow_ssids: Optional[List[str]] = None,
+                  cfg: Optional[Dict[str, Any]] = None,
+                  now: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Enrich survey rows with distance, bearing, map position and tracking."""
+    cfg = cfg if cfg is not None else wifi_config()
+    allow_bssids = allow_bssids or []
+    allow_ssids = allow_ssids or []
+    reference = _cfg_number(cfg, "rssi_at_1m", -40.0)
+    path_loss = _cfg_number(cfg, "path_loss_exponent", 2.7)
+    map_range = _cfg_number(cfg, "map_range_m", 50.0)
+    stamp = now or datetime.now(timezone.utc).isoformat()
+    out: List[Dict[str, Any]] = []
+
+    for ap in aps or []:
+        bssid = normalize_bssid(ap.get("bssid"))
+        if not bssid:
+            continue
+        rssi = ap.get("signal", ap.get("rssi"))
+        distance = estimate_distance(rssi, reference, path_loss)
+        angle = bssid_angle(bssid)
+        position = map_position(distance, angle, map_range)
+        severity, issues = assess_ap(ap, allow_bssids, allow_ssids)
+        kind = classify_device(ap, allow_bssids, allow_ssids)
+        with _TRACE_LOCK:
+            record = _TRACE_STATE.get(bssid) or {
+                "first_seen": stamp, "seen_count": 0}
+            record["last_seen"] = stamp
+            record["seen_count"] = int(record.get("seen_count", 0)) + 1
+            _TRACE_STATE[bssid] = record
+            first_seen = record["first_seen"]
+            seen_count = record["seen_count"]
+        entry = dict(ap)
+        entry.update({
+            "bssid": bssid,
+            "ssid": str(ap.get("ssid") or ""),
+            "channel": ap.get("channel") or 0,
+            "frequency": ap.get("frequency"),
+            "rssi": rssi,
+            "security": list(ap.get("security") or []),
+            "severity": severity,
+            "issues": issues,
+            "kind": kind["kind"],
+            "foreign": bool(kind["foreign"]),
+            "kind_reason": kind["reason"],
+            "distance_m": distance,
+            "distance_band": distance_band(distance),
+            "angle_deg": angle,
+            "map": position,
+            "first_seen": first_seen,
+            "last_seen": stamp,
+            "seen_count": seen_count,
+        })
+        out.append(entry)
+
+    out.sort(key=lambda row: (not row["foreign"],
+                              -_SEV_RANK.get(row["severity"], 0),
+                              row["distance_m"] if row["distance_m"] is not None
+                              else 999.0,
+                              row["bssid"]))
+    return out
+
+
+def summarize_devices(devices: List[Dict[str, Any]]) -> Dict[str, Any]:
+    by_kind: Dict[str, int] = {}
+    by_severity: Dict[str, int] = {}
+    for device in devices or []:
+        kind = str(device.get("kind") or "unknown")
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+        severity = str(device.get("severity") or "info")
+        by_severity[severity] = by_severity.get(severity, 0) + 1
+    foreign = sum(1 for d in (devices or []) if d.get("foreign"))
+    nearest = None
+    for device in devices or []:
+        if device.get("distance_m") is None:
+            continue
+        if nearest is None or device["distance_m"] < nearest["distance_m"]:
+            nearest = {"bssid": device.get("bssid"),
+                       "ssid": device.get("ssid"),
+                       "distance_m": device.get("distance_m")}
+    return {"total": len(devices or []), "foreign": foreign,
+            "authorized": by_kind.get("authorized", 0),
+            "by_kind": by_kind, "by_severity": by_severity,
+            "nearest": nearest}
+
+
+def trace_scan(spec: Optional[Dict[str, Any]] = None,
+               cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Authorized read-only scan + trace snapshot for the dashboard.
+
+    Authorization is checked here as well as in the attack module; the
+    dashboard must not be a quiet way around the engagement reference.
+    """
+    spec = spec or {}
+    cfg = cfg if cfg is not None else wifi_config()
+    if not enabled(cfg):
+        return {"ok": False, "status": "disabled", "devices": [],
+                "error": "wifi.enabled is false in config/ardf.yaml"}
+    auth = authorization_ref(spec, cfg)
+    if not auth:
+        return {"ok": False, "status": "authorization_required",
+                "devices": [], "missing": ["authorization_ref"],
+                "error": "set wifi.authorization_ref, ARDF_WIFI_AUTH or an "
+                         "authorization_ref in the request; no radio action "
+                         "was taken"}
+    iface = resolve_interface(spec, cfg)
+    if not iface:
+        return {"ok": False, "status": "hardware_required", "devices": [],
+                "missing": ["interface"], "interfaces": list_interfaces(),
+                "error": "plug in a wireless adapter or set wifi.interface"}
+    timeout = _bounded_int(spec.get("scan_timeout") or
+                           cfg.get("scan_timeout") or 20, 20, 5, 180)
+    scan = passive_scan(iface, timeout=timeout)
+    if not scan.get("ok"):
+        return {"ok": False, "status": "scan_failed", "interface": iface,
+                "tool": scan.get("tool", ""), "devices": [],
+                "error": scan.get("error", "scan failed")}
+    limit = _bounded_int(spec.get("max_aps") or cfg.get("max_aps") or 250,
+                         250, 1, 500)
+    allow_bssids = allowed_bssids(spec, cfg)
+    allow_ssids = allowed_ssids(spec, cfg)
+    devices = trace_devices((scan.get("aps") or [])[:limit],
+                            allow_bssids, allow_ssids, cfg)
+    summary = summarize_devices(devices)
+    snapshot = {
+        "ok": True, "status": "tracked", "interface": iface,
+        "tool": scan.get("tool", ""), "authorization_ref": auth,
+        "allowed_bssids": allow_bssids, "allowed_ssids": allow_ssids,
+        "devices": devices, "summary": summary,
+        "map_range_m": _cfg_number(cfg, "map_range_m", 50.0),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    with _TRACE_LOCK:
+        _TRACE_LAST.clear()
+        _TRACE_LAST.update(snapshot)
+    try:
+        from ops.events import publish
+        publish("wifi.trace", {
+            "interface": iface,
+            "devices": summary.get("total", 0),
+            "foreign": summary.get("foreign", 0),
+            "nearest": summary.get("nearest"),
+        })
+    except Exception:
+        pass
+    return snapshot
+
+
+def trace_state(limit: int = 100) -> Dict[str, Any]:
+    """Return the last trace snapshot (devices capped by ``limit``)."""
+    with _TRACE_LOCK:
+        if not _TRACE_LAST:
+            snapshot = {}
+        else:
+            try:
+                snapshot = json.loads(json.dumps(_TRACE_LAST))
+            except (TypeError, ValueError):
+                snapshot = dict(_TRACE_LAST)
+    if not snapshot:
+        return {"ok": False, "status": "idle", "devices": [],
+                "summary": summarize_devices([])}
+    snapshot["devices"] = (snapshot.get("devices") or [])[:max(1, limit)]
+    return snapshot
+
+
+def reset_tracking() -> None:
+    with _TRACE_LOCK:
+        _TRACE_STATE.clear()
+        _TRACE_LAST.clear()
 
 
 # ─────────────────────────────────────────────────────────────

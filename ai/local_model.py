@@ -126,6 +126,39 @@ class ModelManager:
     def is_available(self, model_name: str) -> bool:
         return model_name in self.list_models()
 
+    def status(self, role: str = "tactical") -> Dict[str, Any]:
+        """Non-invasive readiness snapshot for the dashboard.
+
+        Never starts Ollama and never pulls a model; only reads the local
+        ``/api/tags`` endpoint. Missing daemon is reported, not raised.
+        """
+        running = self.ollama_running()
+        models = self.list_models(force_refresh=True) if running else []
+        role_models = {}
+        for role_name, candidates in MODEL_ROLES.items():
+            chosen = ""
+            for candidate in candidates:
+                for installed in models:
+                    if installed.startswith(candidate.split(":")[0]):
+                        chosen = installed
+                        break
+                if chosen:
+                    break
+            role_models[role_name] = chosen
+        return {
+            "ollama_running": running,
+            "ollama_url": OLLAMA_BASE,
+            "available": models,
+            "count": len(models),
+            "installed": bool(models),
+            "roles": role_models,
+            "best_for_role": role_models.get(role, ""),
+            "priority": list(MODEL_PRIORITY),
+            "hint": ("" if models else
+                     "start Ollama and pull a model: "
+                     "ollama pull qwen2.5:0.5b"),
+        }
+
     def pull_model(self, model_name: str) -> bool:
         """Pull a model from Ollama registry (requires internet on first pull)."""
         self.logger.info(f"Pulling model {model_name}...")
@@ -434,6 +467,20 @@ class LocalModel:
 # ─────────────────────────────────────────────────────────────
 
 _instances: Dict[str, LocalModel] = {}
+
+
+def model_status(role: str = "tactical",
+                 logger: Optional[ARDFLogger] = None) -> Dict[str, Any]:
+    """Return dashboard-friendly Ollama/model readiness without inference."""
+    return ModelManager(logger=logger).status(role)
+
+
+def start_model_service(logger: Optional[ARDFLogger] = None) -> Dict[str, Any]:
+    """Try to start the local Ollama daemon and return fresh status."""
+    manager = ModelManager(logger=logger)
+    started = manager.start_ollama()
+    return {"started": bool(started), **manager.status()}
+
 
 def get_model(role: str = "tactical", logger: Optional[ARDFLogger] = None) -> LocalModel:
     """Return (and cache) a LocalModel instance for the given role."""

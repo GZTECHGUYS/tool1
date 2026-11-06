@@ -125,6 +125,45 @@ Configuration lives under `wifi:` in `config/ardf.yaml`; the authorization
 reference may also come from `ARDF_WIFI_AUTH`. Without an interface the
 module returns `hardware_required` — it never fakes a scan.
 
+### Dashboard telemetry and Wi-Fi tracing
+
+The ops console Overview now loads live telemetry from
+`GET /api/v3/dashboard/telemetry`: framework modules, AI/Ollama models,
+sessions, findings, jobs, approvals, scope and the last Wi-Fi snapshot.
+The old console called this route before it existed, which is why the
+Overview fell back to "telemetry unavailable" and showed zero modules.
+
+`System integrity` on the Overview is a radar map. Click it (or the
+`Wi-Fi Trace` tab) to open live tracing:
+
+* passive, read-only survey via `iw`, `nmcli`, `termux-wifi-scaninfo` or
+  sysfs detection;
+* every observed BSSID is labelled `authorized`, `evil twin` or `foreign`;
+* RSSI is converted to an estimated distance with a log-distance path-loss
+  model (`wifi.rssi_at_1m`, `wifi.path_loss_exponent`);
+* devices are placed deterministically by BSSID bearing on the map;
+* `Start live` re-surveys every 15 seconds and keeps first/last-seen counts.
+
+Tracing still requires an engagement authorization reference
+(`wifi.authorization_ref`, `ARDF_WIFI_AUTH`, or the field in the Trace
+controls) in addition to dashboard login. Without it the API returns
+`403 authorization_required` and takes no radio action.
+
+```bash
+curl -s -H "Authorization: Bearer $ARDF_TOKEN" \
+  http://127.0.0.1:5000/api/v3/dashboard/telemetry
+curl -s -H "Authorization: Bearer $ARDF_TOKEN" \
+  http://127.0.0.1:5000/api/v3/models/status
+curl -s -X POST -H "Authorization: Bearer $ARDF_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"authorization_ref":"ENG-2026-11","interface":"wlan0"}' \
+  http://127.0.0.1:5000/api/v3/wifi/trace
+```
+
+`boto3`, `cryptography` and `qrcode` are optional dependencies: their
+modules now load without them and return an actionable error only when the
+specific feature is invoked.
+
 Root `offensive_base.py` and `offensive_runner.py` are compatibility shims
 re-exporting `modules.attacks`.
 

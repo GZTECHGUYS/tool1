@@ -169,7 +169,12 @@ class ARDFv3Framework:
         return discovered
 
     def load_module(self, module_path: str) -> bool:
-        """Load a single module."""
+        """Load a single module.
+
+        Each file is executed under a unique synthetic name. Bare stems
+        (``logger``, ``ardf``) used to collide with real package modules and
+        could deadlock CPython's import lock when several loads ran at once.
+        """
         try:
             parts = module_path.split(".")
             if len(parts) == 2:
@@ -178,8 +183,9 @@ class ARDFv3Framework:
                 module_name = parts[-1]
                 category = "unknown"
 
+            unique_name = f"_ardf_discovered_{category}_{module_name}"
             spec = importlib.util.spec_from_file_location(
-                module_name,
+                unique_name,
                 self.base_path / self.discovery.discovered[module_path].path
             )
             if spec and spec.loader:
@@ -198,21 +204,21 @@ class ARDFv3Framework:
             return False
 
     def load_all_modules(self) -> Dict[str, bool]:
-        """Load all discovered modules."""
+        """Load all discovered modules sequentially.
+
+        The previous ThreadPoolExecutor version imported 190+ files at the
+        same time and produced ``deadlock detected by _ModuleLock`` warnings
+        for ``modules.logger`` / ``modules.exploit``. Module import is not a
+        thread-safe free-for-all; serial loading is deterministic and still
+        completes in a few seconds.
+        """
         self.logger.info("Loading all discovered modules...")
         results = {}
 
         discovered = self.discover_modules()
-        futures = {}
-
         for module_path in discovered.keys():
-            future = self.executor.submit(self.load_module, module_path)
-            futures[future] = module_path
-
-        for future in as_completed(futures):
-            module_path = futures[future]
             try:
-                results[module_path] = future.result()
+                results[module_path] = self.load_module(module_path)
             except Exception as e:
                 self.logger.error(f"Exception loading {module_path}: {e}")
                 results[module_path] = False

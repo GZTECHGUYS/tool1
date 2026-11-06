@@ -529,6 +529,9 @@ wifi:
   allowed_ssids: []        # expected SSIDs -> evil-twin detection
   scan_timeout: 45
   max_aps: 250
+  map_range_m: 50          # radar radius for distance placement
+  rssi_at_1m: -40          # calibration: expected RSSI one metre away
+  path_loss_exponent: 2.7  # indoor-ish log-distance exponent
 
 # ─────────────────────────────────────────────────────────────
 # Scope Guardrail (authorised targets only)

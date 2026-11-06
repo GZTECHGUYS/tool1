@@ -28,7 +28,10 @@ import sys
 import time
 import zlib
 from abc import ABC, abstractmethod
-from cryptography.fernet import Fernet
+try:
+    from cryptography.fernet import Fernet
+except ImportError:  # optional; vault reports a clear error on use
+    Fernet = None
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -184,6 +187,10 @@ class CredentialVault:
     def __init__(self, db_path: Path):
         self.db_path = db_path
         self.key = self._load_or_create_key()
+        if Fernet is None:
+            raise RuntimeError(
+                "cryptography is required for the credential vault: "
+                "python3 -m pip install cryptography")
         self.cipher = Fernet(self.key)
         self._init_db()
 
@@ -192,6 +199,10 @@ class CredentialVault:
         key_file = self.db_path.parent / ".vault_key"
         if key_file.exists():
             return key_file.read_bytes()
+        if Fernet is None:
+            raise RuntimeError(
+                "cryptography is required for the credential vault: "
+                "python3 -m pip install cryptography")
         key = Fernet.generate_key()
         key_file.write_bytes(key)
         key_file.chmod(0o600)

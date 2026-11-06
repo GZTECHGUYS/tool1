@@ -354,3 +354,96 @@ def test_bounded_subprocess_timeout(monkeypatch):
     out = wifi._run(["iw", "dev"], timeout=5)
     assert out["rc"] == 124
     assert out["timeout"] is True
+
+
+# ─────────────────────────────────────────────────────────────
+# Distance / live tracing
+# ─────────────────────────────────────────────────────────────
+
+def test_distance_estimate_is_monotonic_and_bounded():
+    near = wifi.estimate_distance(-40)
+    mid = wifi.estimate_distance(-60)
+    far = wifi.estimate_distance(-85)
+    assert near == 1.0
+    assert near < mid < far
+    assert wifi.estimate_distance("bad") is None
+    assert wifi.estimate_distance(0) is None
+    assert wifi.distance_band(near) == "near"
+    assert wifi.distance_band(mid) == "room"
+    assert wifi.distance_band(far) == "far"
+
+
+def test_map_position_is_deterministic_and_bounded():
+    first = wifi.map_position(5.0, wifi.bssid_angle("AA:BB:CC:DD:EE:01"))
+    second = wifi.map_position(5.0, wifi.bssid_angle("aa:bb:cc:dd:ee:01"))
+    assert first == second
+    for xy in (first, wifi.map_position(500.0, 90)):
+        assert 0 <= xy["x"] <= 100
+        assert 0 <= xy["y"] <= 100
+
+
+def test_trace_devices_classifies_and_tracks(monkeypatch):
+    wifi.reset_tracking()
+    aps = [
+        {"bssid": "AA:BB:CC:DD:EE:01", "ssid": "CorpWiFi",
+         "signal": -42, "channel": 1, "security": ["OPEN"]},
+        {"bssid": "AA:BB:CC:DD:EE:02", "ssid": "CorpWiFi",
+         "signal": -70, "channel": 6, "security": ["WPA2"]},
+        {"bssid": "AA:BB:CC:DD:EE:03", "ssid": "Neighbour",
+         "signal": -55, "channel": 11, "security": ["WPA2"]},
+    ]
+    devices = wifi.trace_devices(
+        aps, ["AA:BB:CC:DD:EE:02"], ["CorpWiFi"])
+    by_bssid = {d["bssid"]: d for d in devices}
+    assert by_bssid["AA:BB:CC:DD:EE:01"]["kind"] == "evil_twin"
+    assert by_bssid["AA:BB:CC:DD:EE:01"]["foreign"] is True
+    assert by_bssid["AA:BB:CC:DD:EE:02"]["kind"] == "authorized"
+    assert by_bssid["AA:BB:CC:DD:EE:02"]["foreign"] is False
+    assert by_bssid["AA:BB:CC:DD:EE:03"]["kind"] == "foreign"
+    assert all("distance_m" in d and "map" in d for d in devices)
+    # Foreign devices sort first, nearest first.
+    assert devices[0]["foreign"] is True
+
+    again = wifi.trace_devices(
+        aps, ["AA:BB:CC:DD:EE:02"], ["CorpWiFi"])
+    assert all(d["seen_count"] == 2 for d in again)
+    summary = wifi.summarize_devices(again)
+    assert summary["total"] == 3
+    assert summary["foreign"] == 2
+    assert summary["authorized"] == 1
+    wifi.reset_tracking()
+
+
+def test_trace_scan_requires_authorization(monkeypatch):
+    wifi.reset_tracking()
+    monkeypatch.setattr(wifi, "wifi_config",
+                        lambda: {"enabled": True})
+    out = wifi.trace_scan({})
+    assert out["ok"] is False
+    assert out["status"] == "authorization_required"
+    assert out["devices"] == []
+
+
+def test_trace_scan_reads_radio_when_authorized(monkeypatch):
+    wifi.reset_tracking()
+    cfg = {"enabled": True, "allowed_bssids": ["AA:BB:CC:DD:EE:02"],
+           "allowed_ssids": ["CorpWiFi"], "map_range_m": 50}
+    monkeypatch.setattr(wifi, "wifi_config", lambda: cfg)
+    monkeypatch.setattr(wifi, "resolve_interface",
+                        lambda spec, cfg: "wlan0")
+    monkeypatch.setattr(wifi, "passive_scan", lambda iface, timeout=45: {
+        "ok": True, "tool": "iw", "aps": [
+            {"bssid": "AA:BB:CC:DD:EE:01", "ssid": "CorpWiFi",
+             "signal": -40, "channel": 1, "security": ["OPEN"]},
+            {"bssid": "AA:BB:CC:DD:EE:02", "ssid": "CorpWiFi",
+             "signal": -60, "channel": 6, "security": ["WPA2"]},
+        ]})
+    out = wifi.trace_scan({"authorization_ref": "ENG-2026-11"})
+    assert out["ok"] is True
+    assert out["status"] == "tracked"
+    assert out["summary"]["total"] == 2
+    assert out["summary"]["foreign"] == 1
+    last = wifi.trace_state()
+    assert last["interface"] == "wlan0"
+    assert len(last["devices"]) == 2
+    wifi.reset_tracking()

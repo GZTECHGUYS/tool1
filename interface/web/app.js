@@ -374,6 +374,7 @@
     ["reports", "Reports", "INTELLIGENCE", "▥"],
     ["opsec", "OPSEC", "DEFENSE", "◐"],
     ["preflight", "Preflight", "DEFENSE", "✚"],
+    ["wifi", "Wi-Fi Trace", "DEFENSE", "◎"],
     ["c2", "C2", "ARSENAL", "⌬"],
     ["payloads", "Payloads", "ARSENAL", "▧"],
     ["v2", "V2 Toolkit", "ARSENAL", "⧉"],
@@ -402,6 +403,7 @@
   function go(t) {
     CUR = t;
     nav();
+    if (t !== "wifi") _wifiStop();
     var v = document.getElementById("view");
     if (v) {
       v.style.animation = "none";
@@ -434,6 +436,41 @@
     if (s) s.textContent = sub || "ops console · live telemetry";
   }
   function setView(h) { document.getElementById("view").innerHTML = h; }
+
+  function _wifiStop() {
+    if (window.__wifiTimer) {
+      window.clearInterval(window.__wifiTimer);
+      window.__wifiTimer = null;
+    }
+    var b = document.getElementById("wifi-live");
+    if (b) b.textContent = "Start live";
+  }
+
+  function _blipClass(d) {
+    var kind = String((d && d.kind) || "foreign");
+    if (kind === "authorized") return "auth";
+    if (kind === "evil_twin") return "evil";
+    return "foreign";
+  }
+
+  function _mapBlips(devices) {
+    var out = "";
+    devices = devices || [];
+    for (var i = 0; i < Math.min(devices.length, 40); i++) {
+      var d = devices[i] || {};
+      var m = d.map || {};
+      var x = Number(m.x);
+      var y = Number(m.y);
+      if (!isFinite(x)) x = 50;
+      if (!isFinite(y)) y = 50;
+      out += '<span class="map-blip ' + _blipClass(d) +
+        '" style="left:' + x + '%;top:' + y + '%" title="' +
+        esc((d.ssid || d.bssid || "device") + " · " +
+            (d.distance_m != null ? d.distance_m + " m" : "distance ?")) +
+        '"></span>';
+    }
+    return out;
+  }
 
   function sevCell(f) {
     return '<td class="sev-' + esc(f.severity) + '">' + esc(f.severity) + "</td>";
@@ -520,6 +557,8 @@
         var scope = d.scope || {};
         var atk = d.attacks || {};
         var mods = d.modules || {};
+        var ai = d.ai_models || {};
+        var wifi = d.wifi || {};
         var ep = d.endpoints || {};
         var stream = d.stream || {};
         setTitle("Overview", "command deck · live telemetry");
@@ -536,20 +575,34 @@
           '<div class="stat accent-lime"><div class="stat-label">Approval gates</div>' +
           '<div class="stat-value">' + _num(a.pending) + '</div>' +
           '<div class="stat-sub">' + _num(atk.total) + ' attack modules</div></div>' +
+          '<div class="stat accent-cyan"><div class="stat-label">Modules</div>' +
+          '<div class="stat-value">' + _num(mods.loaded) + '</div>' +
+          '<div class="stat-sub">' + _num(mods.failed) + ' failed · ' +
+          _num(mods.total) + ' discovered</div></div>' +
+          '<div class="stat accent-lime"><div class="stat-label">AI models</div>' +
+          '<div class="stat-value">' + _num(ai.count) + '</div>' +
+          '<div class="stat-sub">' + (ai.ollama_running ? "Ollama online" :
+            "Ollama offline") + '</div></div>' +
           "</div>";
 
         h += '<div class="overview-grid">' +
           '<div class="overview-stack">' +
-          '<div class="card"><h3>System integrity</h3><div class="radar-wrap">' +
+          '<div class="card"><h3>System integrity <span class="badge info">map · click to trace</span></h3>' +
+          '<div class="radar-wrap radar-clickable" onclick="go(\'wifi\')" title="Open Wi-Fi tracing">' +
           '<div class="radar"><div class="radar-sweep"></div>' +
-          '<span class="radar-blip"></span><span class="radar-blip"></span>' +
-          '<span class="radar-blip"></span></div>' +
+          _mapBlips(wifi.devices) + '</div>' +
           '<div class="radar-readout">' +
           '<div class="readout-row"><span>node state</span><b class="good">ONLINE</b></div>' +
           '<div class="readout-row"><span>stream</span><b class="' +
           (stream.last_id ? "good" : "") + '">' + _num(stream.last_id) + ' ev</b></div>' +
           '<div class="readout-row"><span>modules</span><b>' + _num(mods.loaded) +
           ' ok / ' + _num(mods.failed) + ' fail</b></div>' +
+          '<div class="readout-row"><span>ai models</span><b class="' +
+          (ai.count ? "good" : "bad") + '">' + _num(ai.count) + ' ready</b></div>' +
+          '<div class="readout-row"><span>wifi devices</span><b class="' +
+          ((wifi.summary || {}).foreign ? "bad" : "good") + '">' +
+          _num((wifi.summary || {}).total) + ' seen · ' +
+          _num((wifi.summary || {}).foreign) + ' foreign</b></div>' +
           '<div class="readout-row"><span>api routes</span><b>' +
           _num(ep.api_routes) + '</b></div>' +
           '<div class="readout-row"><span>preflight</span><b class="' +
@@ -559,7 +612,11 @@
           '<div class="readout-row"><span>scope guard</span><b class="' +
           (scope.enabled ? "good" : "bad") + '">' +
           (scope.enabled ? "ON · " + _num(scope.targets) + " rules" : "OFF") +
-          '</b></div></div></div></div>' +
+          '</b></div></div></div>' +
+          '<div class="row" style="margin-top:10px">' +
+          '<button class="button button-primary" onclick="go(\'wifi\')">Open Wi-Fi tracing</button>' +
+          '<button class="button button-ghost" onclick="go(\'dash\')">System status</button>' +
+          '</div></div>' +
           '<div class="card"><h3>Severity load <span class="badge info">' +
           _num(f.total) + ' findings</span></h3>' + _sevBars(f.by_severity || {}) +
           "</div></div>" +
@@ -639,17 +696,23 @@
       return Promise.resolve();
     },
     dash: function () {
-      var sum, scope;
+      var sum, scope, models;
       return api("GET", "/api/v3/dashboard/summary").then(function (r) {
         sum = r.d;
         return api("GET", "/api/v3/scope");
       }).then(function (r2) {
         scope = r2.d;
+        return api("GET", "/api/v3/models/status");
+      }).then(function (r3) {
+        models = r3.d || {};
         setTitle("Dashboard");
         var targets = (scope.allowed_targets || []).map(function (t) {
           return "<tr><td>" + esc(t) + "</td>" +
             '<td><button class="button danger" data-entry="' + esc(t) +
             '" onclick="scopedel(this.dataset.entry)">Remove</button></td></tr>';
+        }).join("");
+        var modelRows = (models.available || []).map(function (m) {
+          return "<tr><td><code>" + esc(m) + "</code></td></tr>";
         }).join("");
         setView(
           '<div class="card"><h3>Framework</h3><table>' +
@@ -659,6 +722,17 @@
           "<tr><th>Endpoints</th><td>" + sum.endpoints.total + " in " +
           sum.endpoints.categories + " categories</td></tr>" +
           "</table></div>" +
+          '<div class="card"><h3>AI models ' +
+          (models.ollama_running ? '<span class="badge ok">OLLAMA ONLINE</span>' :
+            '<span class="badge warn">OLLAMA OFFLINE</span>') +
+          '</h3><p class="muted">Local Ollama only. ' +
+          esc(models.hint || "") + '</p><table>' +
+          "<tr><th>Installed model</th></tr>" +
+          (modelRows || '<tr><td class="muted">none detected</td></tr>') +
+          '</table><div class="row"><button class="button" ' +
+          'onclick="modelsStart()">Start Ollama</button>' +
+          '<button class="button button-ghost" onclick="go(\'wifi\')">' +
+          "Wi-Fi tracing</button></div><pre id=\"model-out\">—</pre></div>" +
           '<div class="card"><h3>Scope guardrail ' +
           (scope.enabled ? '<span class="badge ok">ON</span>' : '<span class="badge warn">OFF</span>') +
           '</h3><div class="row"><button class="button" onclick="scopetoggle()">' +
@@ -1129,6 +1203,73 @@
             esc(py[j].fix || "") + "</td></tr>";
         }
         setView(h + "</table></div>");
+      });
+    },
+
+    wifi: function () {
+      setTitle("Wi-Fi Trace", "authorized passive survey · RSSI distance estimate");
+      window.__wifiDevices = [];
+      window.__wifiSelected = "";
+      return api("GET", "/api/v3/wifi/status").then(function (r) {
+        var st = r.d || {};
+        var opts = (st.interfaces || []).map(function (i) {
+          var label = i.name + (i.type ? " (" + i.type + ")" : "");
+          return '<option value="' + esc(i.name) + '"' +
+            (i.name === st.interface ? " selected" : "") + ">" +
+            esc(label) + "</option>";
+        }).join("");
+        var tools = st.tools || {};
+        var toolRows = Object.keys(tools).map(function (name) {
+          return '<span class="pill"><b>' + esc(name) + "</b> " +
+            (tools[name] ? "ok" : "missing") + "</span>";
+        }).join("");
+        var h = '<div class="wifi-grid">' +
+          '<div class="card"><h3>Trace controls <span class="badge ' +
+          (st.enabled ? "ok" : "warn") + '">' +
+          (st.enabled ? "ENABLED" : "DISABLED") + "</span></h3>" +
+          '<div class="row"><select id="wifi-iface">' +
+          (opts || '<option value="">auto</option>') + "</select>" +
+          '<input id="wifi-auth" placeholder="authorization ref ' +
+          '(blank = config / ARDF_WIFI_AUTH)">' +
+          '<button class="button button-primary" onclick="wifiTrace(false)">' +
+          "Trace now</button>" +
+          '<button class="button" id="wifi-live" onclick="wifiLiveToggle()">' +
+          "Start live</button>" +
+          '<button class="button button-ghost" onclick="wifiTrace(true)">' +
+          "Reset + trace</button></div>" +
+          '<p class="muted">Read-only passive scan. Distance is an RSSI ' +
+          "estimate, not a measurement. PMKID capture stays CLI-only and " +
+          "allow-listed.</p>" +
+          '<div class="pill-row">' +
+          '<span class="pill"><b>auth</b> ' +
+          (st.authorization_present ? "configured" : "MISSING") + "</span>" +
+          '<span class="pill"><b>iface</b> ' + esc(st.interface || "none") +
+          "</span>" +
+          '<span class="pill"><b>monitor</b> ' +
+          (st.monitor_capable ? "yes" : "no") + "</span></div>" +
+          '<div class="pill-row">' + toolRows + "</div>" +
+          '<pre id="wifi-msg">—</pre></div>' +
+          '<div class="card"><h3>Proximity map <span class="badge info" ' +
+          'id="wifi-count">0 devices</span></h3>' +
+          '<div class="wifi-map"><div class="wifi-ring r1"></div>' +
+          '<div class="wifi-ring r2"></div><div class="wifi-ring r3"></div>' +
+          '<div class="wifi-sweep"></div><div class="wifi-center"></div>' +
+          '<div id="wifi-blips"></div></div>' +
+          '<div class="wifi-legend"><span class="lg foreign">foreign</span>' +
+          '<span class="lg evil">evil twin</span>' +
+          '<span class="lg auth">authorized</span></div>' +
+          '<p class="muted">Centre = you. Inner rings are near/mid/far, ' +
+          "scaled to " + esc(st.map_range_m || 50) + " m max.</p></div>" +
+          '<div class="card wifi-wide"><h3>Detected devices</h3>' +
+          '<div id="wifi-table"><p class="muted">No trace yet. Set ' +
+          "wifi.authorization_ref or type the engagement ref above, then " +
+          "Trace.</p></div>" +
+          '<pre id="wifi-detail">select a device on the map or table</pre>' +
+          "</div></div>";
+        setView(h);
+        return api("GET", "/api/v3/wifi/devices?limit=200");
+      }).then(function (r) {
+        _wifiRender(r && r.d ? r.d : {});
       });
     },
 
@@ -1792,6 +1933,147 @@
     });
   }
 
+  function _wifiRender(state) {
+    state = state || {};
+    var devices = state.devices || [];
+    var sum = state.summary || {};
+    window.__wifiState = state;
+    window.__wifiDevices = devices;
+
+    var count = document.getElementById("wifi-count");
+    if (count) {
+      count.textContent = _num(sum.total != null ? sum.total : devices.length) +
+        " devices · " + _num(sum.foreign || 0) + " foreign";
+    }
+
+    var blips = "";
+    for (var i = 0; i < Math.min(devices.length, 60); i++) {
+      var d = devices[i] || {};
+      var m = d.map || {};
+      var x = Number(m.x);
+      var y = Number(m.y);
+      if (!isFinite(x)) x = 50;
+      if (!isFinite(y)) y = 50;
+      blips += '<button class="wifi-blip ' + _blipClass(d) +
+        '" style="left:' + x + '%;top:' + y + '%" title="' +
+        esc((d.ssid || d.bssid || "device") + " · " +
+            (d.distance_m != null ? d.distance_m + " m" : "distance ?")) +
+        '" onclick="wifiPick(\'' + esc(d.bssid || "") + '\')"></button>';
+    }
+    var box = document.getElementById("wifi-blips");
+    if (box) {
+      box.innerHTML = blips ||
+        '<span class="wifi-empty">no devices in this snapshot</span>';
+    }
+
+    var table = document.getElementById("wifi-table");
+    if (table) {
+      if (!devices.length) {
+        table.innerHTML = '<p class="muted">No devices in the last ' +
+          "snapshot.</p>";
+      } else {
+        var h = '<table><tr><th>BSSID</th><th>SSID</th><th>Ch</th>' +
+          "<th>RSSI</th><th>Distance</th><th>Band</th><th>Class</th>" +
+          "<th>Severity</th><th>Seen</th></tr>";
+        for (var j = 0; j < devices.length; j++) {
+          var dev = devices[j] || {};
+          var cls = _blipClass(dev);
+          h += '<tr class="wifi-row" onclick="wifiPick(\'' +
+            esc(dev.bssid || "") + '\')"><td><code>' +
+            esc(dev.bssid || "") + "</code></td><td>" +
+            esc(dev.ssid || "(hidden)") + "</td><td>" +
+            esc(dev.channel || "?") + "</td><td>" +
+            esc(dev.rssi != null ? dev.rssi + " dBm" : "?") + "</td><td>" +
+            esc(dev.distance_m != null ? dev.distance_m + " m" : "?") +
+            "</td><td>" + esc(dev.distance_band || "?") + "</td><td>" +
+            '<span class="wifi-kind ' + cls + '">' + esc(dev.kind || "?") +
+            "</span></td><td class=\"sev-" + esc(dev.severity || "info") +
+            '">' + esc(dev.severity || "info") + "</td><td>" +
+            esc(dev.seen_count || 1) + "</td></tr>";
+        }
+        table.innerHTML = h + "</table>";
+      }
+    }
+    _wifiRenderDetail();
+  }
+
+  function _wifiRenderDetail() {
+    var box = document.getElementById("wifi-detail");
+    if (!box) return;
+    var bssid = window.__wifiSelected || "";
+    if (!bssid) {
+      box.textContent = "select a device on the map or table";
+      return;
+    }
+    var devices = window.__wifiDevices || [];
+    for (var i = 0; i < devices.length; i++) {
+      if (devices[i] && devices[i].bssid === bssid) {
+        box.textContent = JSON.stringify(devices[i], null, 1);
+        return;
+      }
+    }
+    box.textContent = "device no longer in the current snapshot: " + bssid;
+  }
+
+  function wifiPick(bssid) {
+    window.__wifiSelected = bssid || "";
+    _wifiRenderDetail();
+  }
+
+  function wifiTrace(reset) {
+    if (window.__wifiBusy) return Promise.resolve();
+    window.__wifiBusy = true;
+    var msg = document.getElementById("wifi-msg");
+    if (msg) msg.textContent = reset ? "resetting tracking and scanning…" :
+      "passive scan in progress…";
+    var iface = document.getElementById("wifi-iface");
+    var auth = document.getElementById("wifi-auth");
+    var body = {};
+    if (iface && iface.value) body.interface = iface.value;
+    if (auth && auth.value) body.authorization_ref = auth.value;
+    if (reset) body.reset = true;
+    return api("POST", "/api/v3/wifi/trace", body).then(function (r) {
+      var d = r.d || {};
+      if (d.ok) {
+        _wifiRender(d);
+        if (msg) {
+          msg.textContent = "tracked " + _num((d.summary || {}).total) +
+            " device(s) on " + (d.interface || "?") +
+            " · " + _num((d.summary || {}).foreign) + " foreign";
+        }
+      } else if (msg) {
+        msg.textContent = "trace " + (d.status || "failed") + ": " +
+          (d.error || "unknown error");
+      }
+      return d;
+    }, function (e) {
+      if (msg) msg.textContent = "trace request failed: " + e;
+    }).then(function () {
+      window.__wifiBusy = false;
+    });
+  }
+
+  function wifiLiveToggle() {
+    if (window.__wifiTimer) {
+      _wifiStop();
+      return;
+    }
+    wifiTrace(false);
+    window.__wifiTimer = window.setInterval(function () {
+      wifiTrace(false);
+    }, 15000);
+    var b = document.getElementById("wifi-live");
+    if (b) b.textContent = "Stop live";
+  }
+
+  function modelsStart() {
+    var out = document.getElementById("model-out");
+    if (out) out.textContent = "starting Ollama…";
+    api("POST", "/api/v3/models/start", {}).then(function (r) {
+      if (out) out.textContent = JSON.stringify(r.d || {}, null, 1);
+    });
+  }
+
   function _overviewFallback(e) {
     if (_loggingOut) return;
     setTitle("Overview", "degraded · telemetry unavailable");
@@ -2004,6 +2286,10 @@
   window.modRun = modRun;
   window.atSelChange = atSelChange;
   window.ovQuick = ovQuick;
+  window.wifiTrace = wifiTrace;
+  window.wifiPick = wifiPick;
+  window.wifiLiveToggle = wifiLiveToggle;
+  window.modelsStart = modelsStart;
   window.toggleTheme = toggleTheme;
   window.retryBoot = retryBoot;
 

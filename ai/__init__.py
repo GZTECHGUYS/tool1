@@ -18,7 +18,8 @@ Models
   Fallback  : tinyllama:1.1b (minimal hardware, always available)
 """
 
-from ai.local_model import LocalModel, ModelManager, get_model
+from ai.local_model import (LocalModel, ModelManager, get_model,
+                             model_status, start_model_service)
 from ai.planner     import MissionPlanner
 from ai.analyst     import FindingAnalyst
 from ai.tactician   import Tactician
@@ -27,6 +28,8 @@ __all__ = [
     "LocalModel",
     "ModelManager",
     "get_model",
+    "model_status",
+    "start_model_service",
     "MissionPlanner",
     "FindingAnalyst",
     "Tactician",

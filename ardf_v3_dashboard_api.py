@@ -84,6 +84,64 @@ class ARDFv3DashboardAPI:
         def dashboard_summary():
             return jsonify(self.get_dashboard_summary())
 
+        @self.app.route("/api/v3/dashboard/telemetry", methods=["GET"])
+        @self.require_auth
+        def dashboard_telemetry():
+            return jsonify(self.get_dashboard_telemetry())
+
+        @self.app.route("/api/v3/models/status", methods=["GET"])
+        @self.require_auth
+        def models_status():
+            return jsonify(self.get_model_status())
+
+        @self.app.route("/api/v3/models/start", methods=["POST"])
+        @self.require_auth
+        def models_start():
+            out = self.start_model_service()
+            self.ops_auth.audit(
+                "models.start", getattr(request, "ops_user", "?"),
+                "success" if out.get("started") else "failed")
+            return jsonify(out)
+
+        @self.app.route("/api/v3/wifi/status", methods=["GET"])
+        @self.require_auth
+        def wifi_status():
+            return jsonify(self.get_wifi_status())
+
+        @self.app.route("/api/v3/wifi/trace", methods=["POST"])
+        @self.require_auth
+        def wifi_trace():
+            data = request.get_json() or {}
+            spec: Dict[str, Any] = {}
+            for key in ("interface", "authorization_ref", "scan_timeout",
+                        "max_aps"):
+                if data.get(key) not in (None, ""):
+                    spec[key] = data[key]
+            from modules.attacks import wifi as _wifi
+            if data.get("reset"):
+                _wifi.reset_tracking()
+            out = _wifi.trace_scan(spec)
+            status = 200
+            if not out.get("ok"):
+                status = {
+                    "authorization_required": 403,
+                    "disabled": 409,
+                    "hardware_required": 503,
+                    "scan_failed": 502,
+                }.get(str(out.get("status")), 400)
+            self.ops_auth.audit(
+                "wifi.trace", getattr(request, "ops_user", "?"),
+                "success" if out.get("ok") else "failed",
+                f"{out.get('status')} {out.get('interface', '')}")
+            return jsonify(out), status
+
+        @self.app.route("/api/v3/wifi/devices", methods=["GET"])
+        @self.require_auth
+        def wifi_devices():
+            from modules.attacks import wifi as _wifi
+            limit = request.args.get("limit", 100, type=int)
+            return jsonify(_wifi.trace_state(limit=limit))
+
         @self.app.route("/api/v3/modules/list", methods=["GET"])
         @self.require_auth
         def list_modules():
@@ -1336,6 +1394,207 @@ class ARDFv3DashboardAPI:
             self.ops_auth.audit("login", username or "?", "failed")
             self.log_request("POST", "/api/v3/auth/login", "failed")
             return jsonify({"error": "Invalid credentials"}), 401
+
+    def _cached_preflight_ready(self) -> Optional[bool]:
+        """Preflight readiness, cached briefly (tool probing is not free)."""
+        import time
+        now = time.monotonic()
+        cache = getattr(self, "_preflight_cache", None)
+        if cache and now - cache[0] < 60:
+            return cache[1]
+        try:
+            from modules.preflight import check
+            ready = bool((check() or {}).get("ready"))
+        except Exception:
+            ready = None
+        self._preflight_cache = (now, ready)
+        return ready
+
+    def _cached_model_status(self) -> Dict[str, Any]:
+        """AI model readiness, cached for 10 seconds."""
+        import time
+        now = time.monotonic()
+        cache = getattr(self, "_model_cache", None)
+        if cache and now - cache[0] < 10:
+            return cache[1]
+        try:
+            from ai.local_model import model_status
+            status = model_status()
+        except Exception as exc:
+            status = {"ollama_running": False, "available": [], "count": 0,
+                      "installed": False, "error": str(exc)}
+        self._model_cache = (now, status)
+        return status
+
+    def get_model_status(self) -> Dict[str, Any]:
+        return self._cached_model_status()
+
+    def start_model_service(self) -> Dict[str, Any]:
+        try:
+            from ai.local_model import start_model_service
+            out = start_model_service()
+            self._model_cache = None
+            return out
+        except Exception as exc:
+            return {"started": False, "error": str(exc)}
+
+    def get_wifi_status(self) -> Dict[str, Any]:
+        import shutil
+        try:
+            from modules.attacks import wifi
+            cfg = wifi.wifi_config()
+            interfaces = wifi.list_interfaces()
+            iface = wifi.resolve_interface({}, cfg)
+            monitor, reason = ((False, "no interface") if not iface
+                               else wifi.monitor_capable(iface))
+            tools = {name: bool(shutil.which(name)) for name in (
+                "iw", "nmcli", "termux-wifi-scaninfo",
+                "hcxdumptool", "hcxpcapngtool")}
+            last = wifi.trace_state(limit=1)
+            return {
+                "enabled": wifi.enabled(cfg),
+                "authorization_present": bool(wifi.authorization_ref({}, cfg)),
+                "interfaces": interfaces,
+                "interface": iface,
+                "monitor_capable": bool(monitor),
+                "monitor_reason": reason,
+                "allowed_bssids": wifi.allowed_bssids({}, cfg),
+                "allowed_ssids": wifi.allowed_ssids({}, cfg),
+                "tools": tools,
+                "last_trace": last.get("timestamp", ""),
+                "last_devices": int((last.get("summary") or {}).get(
+                    "total") or 0),
+                "map_range_m": cfg.get("map_range_m", 50),
+            }
+        except Exception as exc:
+            return {"enabled": False, "error": str(exc),
+                    "interfaces": [], "tools": {}}
+
+    def get_dashboard_telemetry(self) -> Dict[str, Any]:
+        """Aggregate live state for the ops-console overview.
+
+        The frontend has always called this route; without it the overview
+        silently fell back to "telemetry unavailable" and the module readout
+        stayed at zero.
+        """
+        state = self.framework.get_framework_state() or {}
+        modules_info = state.get("modules_info") or {}
+        loaded = int(state.get("modules_loaded") or 0)
+        failed = int(state.get("modules_failed") or 0)
+        if not (loaded or failed) and modules_info:
+            for info in modules_info.values():
+                if (info or {}).get("status") == "loaded":
+                    loaded += 1
+                elif (info or {}).get("status") == "failed":
+                    failed += 1
+
+        sessions: List[Dict[str, Any]] = []
+        findings_by_severity: Dict[str, int] = {
+            "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+        findings_total = 0
+        risk_score = 0.0
+        try:
+            from modules.session import get_manager
+            manager = get_manager()
+            sessions = manager.list_sessions() or []
+            findings_total = sum(int(s.get("findings_count") or 0)
+                                 for s in sessions)
+            risk_score = sum(float(s.get("risk_score") or 0)
+                             for s in sessions)
+            for meta in sessions[:100]:
+                if not int(meta.get("findings_count") or 0):
+                    continue
+                try:
+                    for finding in manager.load(meta["session_id"]).get_findings():
+                        sev = getattr(finding.severity, "value",
+                                      str(finding.severity))
+                        findings_by_severity[sev] = (
+                            findings_by_severity.get(sev, 0) + 1)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        active_sessions = sum(
+            1 for s in sessions
+            if str(s.get("status")) in ("running", "created", "paused"))
+
+        jobs = []
+        approvals = []
+        try:
+            jobs = self.jobs.list_jobs() or []
+            approvals = self.jobs.list_approvals(pending_only=True) or []
+        except Exception:
+            pass
+        active_jobs = sum(
+            1 for job in jobs
+            if str(job.get("status")) in
+            ("queued", "running", "waiting_approval"))
+
+        attacks_total = 0
+        attacks_by_phase: Dict[str, int] = {}
+        try:
+            from modules.attacks import list_attacks
+            rows = list_attacks() or []
+            attacks_total = len(rows)
+            for row in rows:
+                phase = str(row.get("phase") or "?")
+                attacks_by_phase[phase] = attacks_by_phase.get(phase, 0) + 1
+        except Exception:
+            pass
+
+        try:
+            from ops import events as _events
+            stream = _events.stats()
+            last_id = int(stream.get("last_id") or 0)
+            recent = _events.since(max(0, last_id - 40))
+        except Exception:
+            stream = {"history": 0, "subscribers": 0, "last_id": 0}
+            recent = []
+
+        wifi_state: Dict[str, Any] = {}
+        try:
+            from modules.attacks import wifi
+            cfg = wifi.wifi_config()
+            wifi_state = wifi.trace_state(limit=40)
+            wifi_state["enabled"] = wifi.enabled(cfg)
+            wifi_state["authorization_present"] = bool(
+                wifi.authorization_ref({}, cfg))
+            wifi_state.setdefault("devices", [])
+            wifi_state.setdefault("summary", wifi.summarize_devices([]))
+        except Exception:
+            wifi_state = {"devices": [], "status": "unavailable",
+                          "summary": {"total": 0, "foreign": 0}}
+
+        endpoints_total = len(getattr(self.framework.endpoints, "endpoints", {})
+                              or {})
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "sessions": {"total": len(sessions),
+                         "active": active_sessions},
+            "findings": {"total": findings_total,
+                         "by_severity": findings_by_severity,
+                         "risk": round(risk_score, 2)},
+            "jobs": {"total": len(jobs), "active": active_jobs},
+            "approvals": {"pending": len(approvals)},
+            "scope": {"enabled": bool(self.scope.enabled),
+                      "targets": len(self.scope.allowed_targets or [])},
+            "attacks": {"total": attacks_total,
+                        "by_phase": attacks_by_phase},
+            "modules": {"loaded": loaded, "failed": failed,
+                        "total": loaded + failed,
+                        "categories": len({
+                            (info or {}).get("category")
+                            for info in modules_info.values()
+                            if (info or {}).get("category")})},
+            "ai_models": self._cached_model_status(),
+            "wifi": wifi_state,
+            "endpoints": {"api_routes": endpoints_total,
+                          "categories": len(
+                              self.framework.endpoints.get_categories())},
+            "stream": stream,
+            "preflight_ready": self._cached_preflight_ready(),
+            "recent_events": recent,
+        }
 
     def get_dashboard_summary(self) -> Dict[str, Any]:
         """Get dashboard summary data."""

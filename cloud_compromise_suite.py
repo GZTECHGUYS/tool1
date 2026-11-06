@@ -7,8 +7,12 @@ federated identity exploitation, cloud-native security bypass.
 
 import subprocess
 import json
-import boto3
 import requests
+
+try:
+    import boto3
+except ImportError:  # optional: AWS helpers degrade to no-op
+    boto3 = None
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional, Tuple
 from enum import Enum
@@ -111,6 +115,8 @@ class AWSCompromise:
     def enumerate_s3_buckets(aws_access_key: str, aws_secret_key: str) -> List[S3BucketInfo]:
         """Enumerate S3 buckets and check permissions."""
         buckets = []
+        if boto3 is None:
+            return buckets
         
         try:
             s3_client = boto3.client(
@@ -168,6 +174,8 @@ class AWSCompromise:
     def enumerate_iam_policies(aws_access_key: str, aws_secret_key: str) -> List[IAMPolicy]:
         """Enumerate IAM users and their policies."""
         policies = []
+        if boto3 is None:
+            return policies
         
         try:
             iam_client = boto3.client(

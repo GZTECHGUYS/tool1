@@ -12,7 +12,10 @@ import time
 import hmac
 import hashlib
 import base64
-import qrcode
+try:
+    import qrcode
+except ImportError:  # optional; only needed for QR rendering
+    qrcode = None
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional, Tuple
 from enum import Enum
